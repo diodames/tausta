@@ -128,6 +128,7 @@ export async function fetchYahooMetrics(ticker) {
     day_change_pct: num(q.regularMarketChangePercent),
     market_cap: humanizeMarketCap(mcap),
     sector: s.assetProfile?.sector || null,
+    industry: s.assetProfile?.industry || null,
     eps_ttm: num(q.epsTrailingTwelveMonths),
     bvps: num(q.bookValue),
     pe_ttm: num(q.trailingPE),
@@ -196,6 +197,90 @@ export async function fetchYahooChart(ticker, range) {
   };
 }
 
+const BENCHMARK_SYMBOL = "SPY";
+
+function chartTimeKey(t, range) {
+  if (range === "1d" || range === "5d") return t;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+function normalizeChartToMap(points, range) {
+  const valid = points.filter((p) => num(p.p) !== null);
+  if (!valid.length) return new Map();
+  const base = valid[0].p;
+  const map = new Map();
+  for (const { t, p } of valid) {
+    map.set(chartTimeKey(t, range), { t, v: ((p / base) - 1) * 100 });
+  }
+  return map;
+}
+
+export async function fetchPeerCompare(ticker, range) {
+  const rec = await yahooFinance.recommendationsBySymbol(ticker).catch(() => null);
+  let peerSymbols = (rec?.recommendedSymbols || [])
+    .map((r) => r.symbol)
+    .filter((s) => s && s.toUpperCase() !== ticker.toUpperCase());
+
+  if (peerSymbols.length) {
+    const q = await yahooFinance.quote(peerSymbols).catch(() => []);
+    const list = Array.isArray(q) ? q : [q];
+    peerSymbols = list
+      .filter((item) => item?.symbol && num(item.marketCap) !== null)
+      .sort((a, b) => b.marketCap - a.marketCap)
+      .map((item) => item.symbol)
+      .slice(0, 3);
+  }
+
+  const seriesMeta = [
+    { id: ticker.toUpperCase(), role: "primary", label: ticker.toUpperCase() },
+    ...peerSymbols.map((s) => ({ id: s, role: "peer", label: s })),
+    { id: BENCHMARK_SYMBOL, role: "benchmark", label: "S&P 500" },
+  ];
+
+  const chartResults = await Promise.all(
+    seriesMeta.map(async (meta) => {
+      try {
+        const chart = await fetchYahooChart(meta.id, range);
+        return { ...meta, points: chart.points, error: null };
+      } catch (err) {
+        return { ...meta, points: [], error: err.message };
+      }
+    })
+  );
+
+  const primary = chartResults.find((s) => s.role === "primary");
+  if (!primary?.points?.length) {
+    throw new Error(`No chart data for "${ticker}"`);
+  }
+
+  const keyed = chartResults.map((s) => ({
+    ...s,
+    map: normalizeChartToMap(s.points, range),
+  }));
+
+  const primaryKeyed = keyed.find((s) => s.role === "primary");
+  const keys = [...new Set(primary.points.map((p) => chartTimeKey(p.t, range)))].sort();
+
+  const points = keys.map((key) => {
+    const row = {
+      t: primaryKeyed.map.get(key)?.t
+        ?? primary.points.find((p) => chartTimeKey(p.t, range) === key)?.t,
+    };
+    for (const s of keyed) {
+      const hit = s.map.get(key);
+      if (hit) row[s.id] = hit.v;
+    }
+    return row;
+  });
+
+  return {
+    range,
+    peers: peerSymbols,
+    series: chartResults.map(({ id, role, label, error }) => ({ id, role, label, error })),
+    points,
+  };
+}
+
 export async function searchYahooSymbols(query) {
   const r = await yahooFinance.search(query, { quotesCount: 6, newsCount: 0 });
   return (r.quotes || [])
@@ -243,8 +328,61 @@ export async function fetchStreetData(ticker) {
   return { news, stocktwits };
 }
 
+function emptyTldrSections() {
+  return { sentiment_lean: "", dominant_narrative: "", bearish_counterpoint: "" };
+}
+
+function parseTldrSections(text) {
+  const empty = emptyTldrSections();
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    const pick = (key) => (typeof parsed[key] === "string" ? parsed[key].trim() : "");
+    if (typeof parsed.tldr === "string" && parsed.tldr.trim()) {
+      const paragraphs = parsed.tldr.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+      if (paragraphs.length >= 3) {
+        return {
+          sentiment_lean: paragraphs[0],
+          dominant_narrative: paragraphs[1],
+          bearish_counterpoint: paragraphs.slice(2).join(" "),
+        };
+      }
+      if (paragraphs.length === 2) {
+        return { sentiment_lean: paragraphs[0], dominant_narrative: paragraphs[1], bearish_counterpoint: "" };
+      }
+      return { ...empty, sentiment_lean: parsed.tldr.trim() };
+    }
+    const sections = {
+      sentiment_lean: pick("sentiment_lean"),
+      dominant_narrative: pick("dominant_narrative"),
+      bearish_counterpoint: pick("bearish_counterpoint"),
+    };
+    if (sections.sentiment_lean || sections.dominant_narrative || sections.bearish_counterpoint) {
+      return sections;
+    }
+    return null;
+  } catch {
+    // fall through to plain-text fallback
+  }
+
+  const paragraphs = trimmed.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  if (paragraphs.length >= 3) {
+    return {
+      sentiment_lean: paragraphs[0],
+      dominant_narrative: paragraphs[1],
+      bearish_counterpoint: paragraphs.slice(2).join(" "),
+    };
+  }
+  if (paragraphs.length === 2) {
+    return { sentiment_lean: paragraphs[0], dominant_narrative: paragraphs[1], bearish_counterpoint: "" };
+  }
+  return { ...empty, sentiment_lean: trimmed };
+}
+
 export async function writeSentimentSummary(apiKey, ticker, { news, stocktwits }) {
-  const empty = { tldr: null, headlineSentiments: [] };
+  const empty = { tldrSections: null, headlineSentiments: [] };
   if (!apiKey) return empty;
   if (news.length === 0 && !stocktwits) return empty;
 
@@ -265,9 +403,13 @@ ${posts}
 
 ${counts}
 
-Respond with ONLY a JSON object (no markdown fences, no prose outside the JSON) with two keys:
-- "tldr": a TL;DR of 2-4 sentences covering (1) the overall sentiment lean right now (bullish, bearish, or mixed) across news and social posts; (2) the dominant narrative or catalyst people are talking about; (3) the most notable concern or bearish counterpoint. Plain prose, no markdown, no investment advice, do not use the phrase "you should".
-- "headline_sentiments": an array with exactly one entry per numbered headline above, in the same order, each being "bullish", "bearish", or "neutral" — how that headline reads for ${ticker} specifically.`;
+Respond with ONLY a JSON object (no markdown fences, no prose outside the JSON) with four keys:
+- "sentiment_lean": 1-2 sentences on the overall sentiment lean right now (bullish, bearish, or mixed) across news and social posts.
+- "dominant_narrative": 1-2 sentences on the dominant narrative or catalyst people are talking about.
+- "bearish_counterpoint": 1 sentence on the most notable concern or bearish counterpoint.
+- "headline_sentiments": an array with exactly one entry per numbered headline above, in the same order, each being "bullish", "bearish", or "neutral" — how that headline reads for ${ticker} specifically.
+
+Plain text inside each string value only. No investment advice, do not use the phrase "you should".`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -288,14 +430,276 @@ Respond with ONLY a JSON object (no markdown fences, no prose outside the JSON) 
   try {
     const parsed = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
     const valid = new Set(["bullish", "bearish", "neutral"]);
+    const tldrSections = parseTldrSections(text);
     return {
-      tldr: typeof parsed.tldr === "string" && parsed.tldr.trim() ? parsed.tldr.trim() : null,
+      tldrSections,
       headlineSentiments: Array.isArray(parsed.headline_sentiments)
         ? parsed.headline_sentiments.map((s) => (valid.has(s) ? s : "neutral"))
         : [],
     };
   } catch {
-    // model ignored the JSON instruction — fall back to using the raw text as the TL;DR
-    return { tldr: text || null, headlineSentiments: [] };
+    const tldrSections = parseTldrSections(text);
+    return { tldrSections, headlineSentiments: [] };
   }
+}
+
+const SECTOR_ETF = {
+  "Basic Materials": "XLB",
+  "Communication Services": "XLC",
+  "Consumer Cyclical": "XLY",
+  "Consumer Defensive": "XLP",
+  "Energy": "XLE",
+  "Financial Services": "XLF",
+  "Healthcare": "XLV",
+  "Industrials": "XLI",
+  "Real Estate": "XLRE",
+  "Technology": "XLK",
+  "Utilities": "XLU",
+};
+
+async function chartTotalReturn(symbol, range = "1mo") {
+  try {
+    const chart = await fetchYahooChart(symbol, range);
+    const pts = (chart.points || []).filter((p) => num(p.p) !== null);
+    if (pts.length < 2) return null;
+    return ((pts[pts.length - 1].p / pts[0].p) - 1) * 100;
+  } catch {
+    return null;
+  }
+}
+
+function leanFromScore(score) {
+  if (score > 0.25) return "bullish";
+  if (score < -0.25) return "bearish";
+  return "mixed";
+}
+
+function scoreSignalGroup(signals) {
+  if (!signals.length) return { lean: "mixed", score: 0, signals: [] };
+  const weights = { bullish: 1, neutral: 0, bearish: -1 };
+  let total = 0;
+  let wSum = 0;
+  for (const s of signals) {
+    total += weights[s.lean] * s.weight;
+    wSum += s.weight;
+  }
+  const score = wSum ? total / wSum : 0;
+  return { lean: leanFromScore(score), score, signals };
+}
+
+function buildOutlookSignals(ticker, metrics, peerData, streetData, sectorReturn, spyReturn) {
+  const tickerSignals = [];
+  const industrySignals = [];
+  const sym = ticker.toUpperCase();
+
+  if (num(metrics.analyst_target) !== null && num(metrics.price) !== null && metrics.price > 0) {
+    const upside = ((metrics.analyst_target - metrics.price) / metrics.price) * 100;
+    tickerSignals.push({
+      id: "analyst_upside",
+      label: "Analyst target",
+      lean: upside > 5 ? "bullish" : upside < -5 ? "bearish" : "neutral",
+      detail: `${upside >= 0 ? "+" : ""}${upside.toFixed(1)}% vs current price`,
+      weight: 2,
+    });
+  }
+
+  if (num(metrics.pe_forward) !== null && num(metrics.pe_ttm) !== null && metrics.pe_ttm > 0) {
+    const ratio = metrics.pe_forward / metrics.pe_ttm;
+    tickerSignals.push({
+      id: "earnings_growth",
+      label: "Forward vs trailing P/E",
+      lean: ratio < 0.9 ? "bullish" : ratio > 1.1 ? "bearish" : "neutral",
+      detail: `${metrics.pe_forward.toFixed(1)} fwd vs ${metrics.pe_ttm.toFixed(1)} trailing`,
+      weight: 1.5,
+    });
+  }
+
+  if (num(metrics.week52_low) !== null && num(metrics.week52_high) !== null
+    && num(metrics.price) !== null && metrics.week52_high > metrics.week52_low) {
+    const pos = (metrics.price - metrics.week52_low) / (metrics.week52_high - metrics.week52_low);
+    tickerSignals.push({
+      id: "range_position",
+      label: "52-week range",
+      lean: pos < 0.35 ? "bullish" : pos > 0.75 ? "bearish" : "neutral",
+      detail: `${Math.round(pos * 100)}% up the range`,
+      weight: 1,
+    });
+  }
+
+  const lastPoint = peerData?.points?.length ? peerData.points[peerData.points.length - 1] : null;
+  if (lastPoint && lastPoint[sym] != null && lastPoint[BENCHMARK_SYMBOL] != null) {
+    const rel = lastPoint[sym] - lastPoint[BENCHMARK_SYMBOL];
+    tickerSignals.push({
+      id: "momentum_1mo",
+      label: "1-mo vs S&P 500",
+      lean: rel > 2 ? "bullish" : rel < -2 ? "bearish" : "neutral",
+      detail: `${rel >= 0 ? "+" : ""}${rel.toFixed(1)}% relative`,
+      weight: 1.25,
+    });
+  }
+
+  const st = streetData?.stocktwits;
+  if (st) {
+    const tagged = st.bullish + st.bearish;
+    if (tagged > 0) {
+      const bullPct = (st.bullish / tagged) * 100;
+      tickerSignals.push({
+        id: "social_mood",
+        label: "StockTwits mood",
+        lean: bullPct >= 60 ? "bullish" : bullPct <= 40 ? "bearish" : "neutral",
+        detail: `${Math.round(bullPct)}% bullish among tagged posts`,
+        weight: 0.75,
+      });
+    }
+  }
+
+  if (num(metrics.piotroski) !== null) {
+    tickerSignals.push({
+      id: "piotroski",
+      label: "Piotroski F-Score",
+      lean: metrics.piotroski >= 7 ? "bullish" : metrics.piotroski <= 3 ? "bearish" : "neutral",
+      detail: `${metrics.piotroski}/9`,
+      weight: 1,
+    });
+  }
+
+  if (num(metrics.altman_z) !== null) {
+    tickerSignals.push({
+      id: "altman_z",
+      label: "Altman Z-Score",
+      lean: metrics.altman_z >= 2.99 ? "bullish" : metrics.altman_z < 1.81 ? "bearish" : "neutral",
+      detail: metrics.altman_z.toFixed(2),
+      weight: 1.25,
+    });
+  }
+
+  const peers = (peerData?.series || []).filter((s) => s.role === "peer");
+  if (lastPoint && peers.length) {
+    const peerRets = peers.map((p) => lastPoint[p.id]).filter((v) => v != null);
+    if (peerRets.length && lastPoint[BENCHMARK_SYMBOL] != null) {
+      const avgPeer = peerRets.reduce((a, b) => a + b, 0) / peerRets.length;
+      const rel = avgPeer - lastPoint[BENCHMARK_SYMBOL];
+      industrySignals.push({
+        id: "peer_basket",
+        label: "Peer group vs S&P 500",
+        lean: rel > 1 ? "bullish" : rel < -1 ? "bearish" : "neutral",
+        detail: `${rel >= 0 ? "+" : ""}${rel.toFixed(1)}% avg peer relative (1 mo)`,
+        weight: 2,
+      });
+    }
+  }
+
+  if (sectorReturn != null && spyReturn != null) {
+    const rel = sectorReturn - spyReturn;
+    industrySignals.push({
+      id: "sector_etf",
+      label: `${metrics.sector || "Sector"} ETF vs S&P 500`,
+      lean: rel > 1 ? "bullish" : rel < -1 ? "bearish" : "neutral",
+      detail: `${rel >= 0 ? "+" : ""}${rel.toFixed(1)}% sector relative (1 mo)`,
+      weight: 2,
+    });
+  }
+
+  if (num(metrics.pe_ttm) !== null && peers.length && lastPoint) {
+    // Peer momentum breadth: how many peers beat SPY this month
+    const spyRet = lastPoint[BENCHMARK_SYMBOL];
+    if (spyRet != null) {
+      const beating = peers.filter((p) => lastPoint[p.id] != null && lastPoint[p.id] > spyRet).length;
+      const breadth = beating / peers.length;
+      industrySignals.push({
+        id: "peer_breadth",
+        label: "Peers beating market",
+        lean: breadth >= 0.67 ? "bullish" : breadth <= 0.33 ? "bearish" : "neutral",
+        detail: `${beating} of ${peers.length} peers ahead of S&P 500 (1 mo)`,
+        weight: 1,
+      });
+    }
+  }
+
+  return {
+    ticker: scoreSignalGroup(tickerSignals),
+    industry: scoreSignalGroup(industrySignals),
+  };
+}
+
+export async function writeOutlookNarrative(apiKey, ticker, metrics, outlook) {
+  const empty = { ticker: "", industry: "" };
+  if (!apiKey) return empty;
+
+  const fmtGroup = (label, group) => {
+    const lines = group.signals.map((s) => `- ${s.label}: ${s.lean} (${s.detail})`).join("\n");
+    return `${label} (overall lean: ${group.lean}, score ${group.score.toFixed(2)}):\n${lines || "(no signals)"}`;
+  };
+
+  const prompt = `You are a neutral equity analyst writing a brief forward-looking read for an educational screening tool. Base your outlook ONLY on the quantitative signals below — do not invent facts or cite news not listed here.
+
+Company: ${metrics.company_name || ticker} (${ticker})
+Sector: ${metrics.sector || "unknown"}
+Industry: ${metrics.industry || "unknown"}
+Price: ${metrics.currency || "USD"} ${metrics.price}${metrics.as_of ? ` as of ${metrics.as_of}` : ""}
+
+${fmtGroup("Stock outlook signals", outlook.ticker)}
+
+${fmtGroup("Industry/sector outlook signals", outlook.industry)}
+
+Respond with ONLY a JSON object (no markdown fences) with two keys:
+- "ticker": 2 sentences on the likely near-term direction for ${ticker} based on these signals. Mention the strongest bullish and bearish inputs.
+- "industry": 2 sentences on the near-term outlook for the ${metrics.sector || "broader"} sector/industry based on these signals.
+
+Be balanced, cite specific signals, and do NOT give buy/sell advice or use "you should". Plain text inside each JSON value only.`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 350,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!response.ok) return empty;
+  const data = await response.json();
+  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  try {
+    const parsed = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    return {
+      ticker: typeof parsed.ticker === "string" ? parsed.ticker.trim() : "",
+      industry: typeof parsed.industry === "string" ? parsed.industry.trim() : "",
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export async function fetchOutlook(ticker, apiKey) {
+  const [metrics, peerData, streetData] = await Promise.all([
+    fetchYahooMetrics(ticker),
+    fetchPeerCompare(ticker, "1mo"),
+    fetchStreetData(ticker),
+  ]);
+
+  const etfSymbol = metrics.sector ? SECTOR_ETF[metrics.sector] : null;
+  const [sectorReturn, spyReturn] = etfSymbol
+    ? await Promise.all([chartTotalReturn(etfSymbol, "1mo"), chartTotalReturn(BENCHMARK_SYMBOL, "1mo")])
+    : [null, null];
+
+  const outlook = buildOutlookSignals(ticker, metrics, peerData, streetData, sectorReturn, spyReturn);
+  const narrative = await writeOutlookNarrative(apiKey, ticker, metrics, outlook).catch(() => ({
+    ticker: "",
+    industry: "",
+  }));
+
+  return {
+    ticker: ticker.toUpperCase(),
+    sector: metrics.sector,
+    industry: metrics.industry,
+    sectorEtf: etfSymbol,
+    outlookAvailable: Boolean(apiKey),
+    outlook,
+    narrative,
+  };
 }

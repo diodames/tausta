@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ChevronDownIcon, InfoIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
-import { Area, AreaChart, ReferenceLine, XAxis, YAxis } from "recharts";
+import { ChartLineIcon, ChevronDownIcon, InfoIcon, MegaphoneIcon, ScaleIcon, SearchIcon, ShieldAlertIcon, TrendingUpIcon, TriangleAlertIcon } from "lucide-react";
+import { Area, AreaChart, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts";
 
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -260,12 +260,56 @@ const STRATEGIES = [
 
 const GROUPS = ["Valuation ratios", "Intrinsic value", "Price context", "Quality & risk"];
 
+const VALUATION_SUBCLUSTERS = [
+  { label: "Earnings multiples", ids: ["pe_industry", "forward_pe", "peg"] },
+  { label: "Asset & cash flow", ids: ["pb", "pfcf", "ev_ebitda"] },
+  { label: "Income", ids: ["dividend"] },
+];
+
 /* ————— helpers ————— */
 function isNum(v) { return typeof v === "number" && isFinite(v); }
 function fmt(v) { return isNum(v) ? (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2)) : "—"; }
 function pct(v) { return `${(v * 100).toFixed(0)}%`; }
+function moneySymbol(currency) {
+  if (!currency || currency === "USD") return "$";
+  return `${currency} `;
+}
+function fmtMoney(v, currency) {
+  if (!isNum(v)) return "—";
+  const sym = moneySymbol(currency);
+  const abs = Math.abs(v);
+  const formatted = abs >= 1000
+    ? v.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${sym}${formatted}`;
+}
+function rangePlainSummary(d, pos) {
+  const { price, week52_low: low, week52_high: high, currency } = d;
+  if (pos >= 0.7) {
+    return {
+      headline: "Today's price is closer to the 52-week high",
+      detail: `${fmtMoney(price, currency)} is ${pct((high - price) / high)} below the high · ${pct(pos)} above the low`,
+    };
+  }
+  if (pos < 0.33) {
+    return {
+      headline: "Today's price is closer to the 52-week low",
+      detail: `${fmtMoney(price, currency)} is ${pct((price - low) / low)} above the low · ${pct(pos)} up from the low`,
+    };
+  }
+  return {
+    headline: "Today's price is midway between the 52-week low and high",
+    detail: `${fmtMoney(price, currency)} sits ${pct(pos)} of the way from low to high`,
+  };
+}
 function verdict(kind, detail) { return { kind, detail }; }
 function na() { return { kind: "na", detail: "Data not available for this metric" }; }
+
+function splitDetail(detail) {
+  const sep = detail.indexOf(" — ");
+  if (sep === -1) return { primary: detail, secondary: null };
+  return { primary: detail.slice(0, sep), secondary: detail.slice(sep + 3) };
+}
 
 /* linear interpolation: `good` → 100, `bad` → 0, clamped */
 function lerpScore(value, good, bad) {
@@ -311,6 +355,20 @@ const KIND_META = {
   na:      { label: "No data",     text: "text-muted-foreground", border: "border-border" },
 };
 
+function summarizeGroupVerdicts(rows) {
+  const counts = {};
+  for (const { result } of rows) {
+    counts[result.kind] = (counts[result.kind] || 0) + 1;
+  }
+  const parts = [];
+  for (const kind of ["under", "fair", "over", "caution", "na"]) {
+    const n = counts[kind];
+    if (!n) continue;
+    parts.push(`${n} ${KIND_META[kind].label.toLowerCase()}`);
+  }
+  return parts.join(" · ");
+}
+
 /* ————— live data via Yahoo Finance (server endpoint) ————— */
 async function fetchMetrics(ticker) {
   const response = await fetch(`/api/metrics/${encodeURIComponent(ticker)}`);
@@ -344,6 +402,58 @@ async function fetchMetricsSmart(token) {
   }
 }
 
+const OPINION_SECTIONS = [
+  { key: "price_context", label: "Price context", icon: ChartLineIcon },
+  { key: "strategy_read", label: "Strategy read", icon: ScaleIcon },
+  { key: "key_caveat", label: "Key caveat", icon: ShieldAlertIcon },
+];
+
+const SENTIMENT_SECTIONS = [
+  { key: "sentiment_lean", label: "Overall sentiment", icon: TrendingUpIcon },
+  { key: "dominant_narrative", label: "Dominant narrative", icon: MegaphoneIcon },
+  { key: "bearish_counterpoint", label: "Bearish counterpoint", icon: ShieldAlertIcon },
+];
+
+function hasTldrSections(sections) {
+  if (!sections) return false;
+  return SENTIMENT_SECTIONS.some((s) => sections[s.key]?.trim());
+}
+
+function parseOpinionResponse(text) {
+  const empty = { price_context: "", strategy_read: "", key_caveat: "" };
+  const trimmed = text.trim();
+  if (!trimmed) return empty;
+
+  try {
+    const parsed = JSON.parse(trimmed.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+    const pick = (key) => (typeof parsed[key] === "string" ? parsed[key].trim() : "");
+    const sections = {
+      price_context: pick("price_context"),
+      strategy_read: pick("strategy_read"),
+      key_caveat: pick("key_caveat"),
+    };
+    if (sections.price_context || sections.strategy_read || sections.key_caveat) {
+      return sections;
+    }
+  } catch {
+    // fall through to plain-text fallback
+  }
+
+  const paragraphs = trimmed.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  if (paragraphs.length >= 3) {
+    return {
+      price_context: paragraphs[0],
+      strategy_read: paragraphs[1],
+      key_caveat: paragraphs.slice(2).join(" "),
+    };
+  }
+  if (paragraphs.length === 2) {
+    return { price_context: paragraphs[0], strategy_read: paragraphs[1], key_caveat: "" };
+  }
+
+  return { price_context: "", strategy_read: trimmed, key_caveat: "" };
+}
+
 async function fetchOpinion(ticker, d, results) {
   const lines = results
     .filter((r) => r.result.kind !== "na")
@@ -354,14 +464,19 @@ async function fetchOpinion(ticker, d, results) {
 Verdicts from the screening strategies:
 ${lines}
 
-Write a concise 4-6 sentence plain-text read of this stock for an educational screening tool. Cover: (1) where the price currently stands (e.g. relative to its 52-week range of ${d.week52_low}-${d.week52_high} and the analyst target of ${d.analyst_target}); (2) the overall balance of the strategy verdicts and what the strongest signals for and against undervaluation are; (3) the most important caveat or value-trap risk given these specific numbers. Be balanced and factual. Do NOT tell the reader to buy or sell, do not use phrases like "you should", and do not use markdown or bullet points — plain prose only.`;
+Respond with ONLY a JSON object (no markdown fences, no prose outside the JSON) with three keys:
+- "price_context": 1-2 sentences on where the price stands relative to the 52-week range (${d.week52_low}-${d.week52_high}) and the analyst target (${d.analyst_target}).
+- "strategy_read": 1-2 sentences on the overall balance of strategy verdicts and the strongest signals for and against undervaluation.
+- "key_caveat": 1 sentence on the most important value-trap risk or caveat given these specific numbers.
+
+Be balanced and factual. Do NOT tell the reader to buy or sell and do not use phrases like "you should". Plain text inside each JSON value only.`;
 
   const response = await fetch("/api/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 1000,
+      max_tokens: 350,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -370,7 +485,8 @@ Write a concise 4-6 sentence plain-text read of this stock for an educational sc
     throw new Error(err.error?.message || `Opinion request failed (${response.status})`);
   }
   const data = await response.json();
-  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  return parseOpinionResponse(text);
 }
 
 /* ————— UI pieces ————— */
@@ -400,55 +516,60 @@ function PriceContext({ d }) {
     ["P/E (ttm)", fmt(d.pe_ttm)],
     ["EPS (ttm)", isNum(d.eps_ttm) ? fmt(d.eps_ttm) : "—"],
     ["Div. yield", isNum(d.dividend_yield_pct) ? `${fmt(d.dividend_yield_pct)}%` : "—"],
-    ["Analyst target", isNum(d.analyst_target) ? `$${fmt(d.analyst_target)}` : "—"],
+    ["Analyst target", isNum(d.analyst_target) ? fmtMoney(d.analyst_target, d.currency) : "—"],
   ];
   return (
-    <div className="border-b bg-background/60 px-4 py-3">
+    <div className="border-b bg-background/60 px-4 pt-2 pb-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="font-display text-4xl font-bold tabular-nums">
-          {isNum(d.price) ? `${d.currency === "USD" || !d.currency ? "$" : d.currency + " "}${fmt(d.price)}` : "—"}
+          {isNum(d.price) ? fmtMoney(d.price, d.currency) : "—"}
         </span>
         {isNum(chg) && (
           <span className={cn("font-mono text-sm font-medium tabular-nums", chg >= 0 ? "text-under" : "text-over")}>
             {chg >= 0 ? "▲" : "▼"} {fmt(Math.abs(chg))}% today
           </span>
         )}
-        {d.as_of && <span className="font-mono text-xs text-muted-foreground">as of {d.as_of}</span>}
       </div>
 
-      {hasRange && (
+      {hasRange && (() => {
+        const summary = rangePlainSummary(d, pos);
+        return (
         <div className="mt-4 cursor-default select-none">
-          <div className="flex items-baseline justify-between">
-            <SectionLabel>52-week range</SectionLabel>
-            <span className="font-mono text-xs text-muted-foreground tabular-nums">
-              price sits {pct(pos)} up the range
-            </span>
+          <div className="flex items-center gap-1">
+            <SectionLabel className="mb-0">52-week range</SectionLabel>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="What does the 52-week range show?"
+                    className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
+                  >
+                    <InfoIcon className="size-3" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-56 font-sans normal-case tracking-normal">
+                  Shows where today&apos;s price falls between the lowest and highest prices over
+                  the past year. This is price history, not a valuation verdict.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
 
-          {/* current price annotation above the bar */}
-          <div className="relative mt-1.5 h-4">
-            <span
-              className="absolute top-0 font-mono text-xs font-semibold tabular-nums"
-              style={{ left: `${pos * 100}%`, transform: `translateX(-${pos * 100}%)` }}
-            >
-              ${fmt(d.price)}
-            </span>
-          </div>
+          <p className="m-0 mt-1.5 text-sm text-foreground/90">{summary.headline}</p>
+          <p className="m-0 mt-0.5 font-mono text-xs tabular-nums text-muted-foreground">
+            {summary.detail}
+          </p>
 
-          <div className="relative mt-0.5 h-2 rounded-full bg-border">
-            <div
-              className={cn(
-                "absolute inset-y-0 left-0 rounded-full",
-                pos < 0.33 ? "bg-under" : pos < 0.7 ? "bg-fair" : "bg-over"
-              )}
-              style={{ width: `${pos * 100}%` }}
-            />
-            {/* current price marker */}
+          <div
+            className="relative mt-3 h-2 rounded-full bg-border"
+            role="img"
+            aria-label={`Price at ${pct(pos)} between 52-week low and high`}
+          >
             <div
               className="absolute -inset-y-1 w-0.5 rounded-full bg-foreground"
               style={{ left: `calc(${pos * 100}% - 1px)` }}
             />
-            {/* analyst target tick */}
             {tPos !== null && (
               <div
                 className="absolute -inset-y-1 w-0.5 bg-muted-foreground/70"
@@ -457,15 +578,24 @@ function PriceContext({ d }) {
             )}
           </div>
 
-          <div className="relative mt-2 flex justify-between font-mono text-xs text-muted-foreground tabular-nums">
-            <span>low ${fmt(d.week52_low)}</span>
-            {/* target label sits under its tick, hidden near the edges to avoid colliding with low/high */}
+          <div className="relative mt-2">
+            <div className="flex justify-between gap-4 font-mono text-xs tabular-nums">
+              <span className="text-muted-foreground">
+                <span className="block text-[10px] uppercase tracking-wide">52-wk low</span>
+                {fmtMoney(d.week52_low, d.currency)}
+              </span>
+              <span className="text-right text-muted-foreground">
+                <span className="block text-[10px] uppercase tracking-wide">52-wk high</span>
+                {fmtMoney(d.week52_high, d.currency)}
+              </span>
+            </div>
             {tPos !== null && tPos >= 0.14 && tPos <= 0.86 && (
+              <div className="relative mt-1 h-4 w-full">
               <span
-                className="absolute inline-flex items-center gap-1"
+                className="absolute top-0 inline-flex items-center gap-1 font-mono text-xs tabular-nums text-muted-foreground"
                 style={{ left: `${tPos * 100}%`, transform: `translateX(-${tPos * 100}%)` }}
               >
-                target ${fmt(d.analyst_target)}
+                target {fmtMoney(d.analyst_target, d.currency)}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -484,15 +614,16 @@ function PriceContext({ d }) {
                   </Tooltip>
                 </TooltipProvider>
               </span>
+              </div>
             )}
-            <span>high ${fmt(d.week52_high)}</span>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       <div className="mt-3 grid grid-cols-2 gap-x-6 sm:grid-cols-3">
         {stats.map(([k, v]) => (
-          <div key={k} className="flex items-baseline justify-between gap-3 border-b border-border/60 py-1.5">
+          <div key={k} className="flex items-baseline justify-between gap-3 py-1.5">
             <div className="text-xs text-muted-foreground">{k}</div>
             <div className="font-mono text-sm font-medium tabular-nums">{v}</div>
           </div>
@@ -507,6 +638,16 @@ const CHART_RANGES = [
   ["1d", "1D"], ["5d", "5D"], ["1mo", "1M"], ["6mo", "6M"],
   ["ytd", "YTD"], ["1y", "1Y"], ["5y", "5Y"], ["max", "All"],
 ];
+
+const PEER_COMPARE_RANGES = [
+  ["1mo", "1M"], ["6mo", "6M"], ["ytd", "YTD"], ["1y", "1Y"], ["5y", "5Y"],
+];
+
+const PEER_SERIES_COLORS = {
+  primary: "var(--foreground)",
+  peer: ["var(--chart-2)", "var(--chart-3)", "var(--chart-4)"],
+  benchmark: "var(--chart-5)",
+};
 
 function tickFormatterFor(range) {
   if (range === "1d") return (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -666,6 +807,210 @@ function PriceChart({ ticker, currency }) {
   );
 }
 
+function peerSeriesColor(role, peerIndex) {
+  if (role === "primary") return PEER_SERIES_COLORS.primary;
+  if (role === "benchmark") return PEER_SERIES_COLORS.benchmark;
+  return PEER_SERIES_COLORS.peer[peerIndex % PEER_SERIES_COLORS.peer.length];
+}
+
+function PeerCompareTooltip({ active, payload, range }) {
+  if (!active || !payload?.length) return null;
+  const t = payload[0]?.payload?.t;
+  return (
+    <div className="rounded-lg border bg-popover px-2.5 py-1.5 font-mono text-xs shadow-md">
+      {t != null && (
+        <div className="text-muted-foreground">{tooltipLabelFor(range, t)}</div>
+      )}
+      <div className="mt-1 flex flex-col gap-0.5">
+        {payload
+          .filter((item) => isNum(item.value))
+          .sort((a, b) => b.value - a.value)
+          .map((item) => (
+            <div key={item.dataKey} className="flex items-center justify-between gap-4 tabular-nums">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="size-2 rounded-full"
+                  style={{ backgroundColor: item.color }}
+                />
+                {item.name}
+              </span>
+              <span className={cn("font-medium", item.value >= 0 ? "text-under" : "text-over")}>
+                {item.value >= 0 ? "+" : ""}{fmt(item.value)}%
+              </span>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+function PeerCompareChart({ ticker, className }) {
+  const [range, setRange] = useState("1mo");
+  const [cache, setCache] = useState({});
+  const [error, setError] = useState(null);
+
+  const data = cache[range];
+
+  useEffect(() => {
+    if (cache[range]) return;
+    let alive = true;
+    setError(null);
+    fetch(`/api/peers/${encodeURIComponent(ticker)}?range=${range}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error?.message || `Peer compare request failed (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((d) => { if (alive) setCache((prev) => ({ ...prev, [range]: d })); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, [ticker, range, cache]);
+
+  const chartConfig = Object.fromEntries(
+    (data?.series || []).map((s, i) => {
+      const peerIdx = (data?.series || [])
+        .slice(0, i + 1)
+        .filter((x) => x.role === "peer").length - 1;
+      return [s.id, {
+        label: s.label,
+        color: peerSeriesColor(s.role, Math.max(0, peerIdx)),
+      }];
+    })
+  );
+
+  return (
+    <div className={cn("border-t border-border px-4 py-3", className)}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+        <span className="inline-flex items-center gap-1">
+          <SectionLabel className="mb-0">Vs. top peers & S&P 500</SectionLabel>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="How is the peer comparison calculated?"
+                  className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
+                >
+                  <InfoIcon className="size-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-60 font-sans normal-case tracking-normal">
+                Indexed return from period start — {ticker.toUpperCase()} vs. three largest related
+                peers{data?.peers?.length ? ` (${data.peers.join(", ")})` : ""} and the S&P 500 (SPY).
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </span>
+        <ToggleGroup
+          type="single"
+          size="sm"
+          spacing={1}
+          className="ml-auto"
+          value={range}
+          onValueChange={(v) => v && setRange(v)}
+        >
+          {PEER_COMPARE_RANGES.map(([value, label]) => (
+            <ToggleGroupItem
+              key={value}
+              value={value}
+              className="relative h-6 min-w-8 px-2 font-mono text-[11px] text-muted-foreground after:absolute after:inset-x-0 after:-inset-y-2 data-[state=on]:bg-secondary data-[state=on]:font-medium data-[state=on]:text-foreground"
+            >
+              {label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+
+      <div className="mt-2">
+        {error ? (
+          <div className="flex h-40 items-center justify-center font-mono text-xs text-muted-foreground">
+            Couldn't load peer chart — {error}
+          </div>
+        ) : !data ? (
+          <Skeleton className="h-40 w-full" />
+        ) : data.points.length === 0 ? (
+          <div className="flex h-40 items-center justify-center font-mono text-xs text-muted-foreground">
+            No comparison data for this range
+          </div>
+        ) : (
+          <>
+            <ChartContainer config={chartConfig} className="h-40 w-full aspect-auto">
+              <LineChart data={data.points} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+                <XAxis
+                  dataKey="t"
+                  type="number"
+                  scale="time"
+                  domain={["dataMin", "dataMax"]}
+                  tickFormatter={tickFormatterFor(range)}
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={48}
+                  tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }}
+                />
+                <YAxis
+                  orientation="right"
+                  tickFormatter={(v) => `${v >= 0 ? "+" : ""}${fmt(v)}%`}
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                  tick={{ fontSize: 10, fontFamily: "var(--font-mono)" }}
+                />
+                <ChartTooltip
+                  cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }}
+                  content={<PeerCompareTooltip range={range} />}
+                />
+                <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="4 4" />
+                {data.series.map((s, i) => {
+                  if (s.error) return null;
+                  const peerIdx = data.series.slice(0, i + 1).filter((x) => x.role === "peer").length - 1;
+                  const color = peerSeriesColor(s.role, Math.max(0, peerIdx));
+                  return (
+                    <Line
+                      key={s.id}
+                      type="monotone"
+                      dataKey={s.id}
+                      name={s.label}
+                      stroke={color}
+                      strokeWidth={s.role === "primary" ? 2 : 1.5}
+                      strokeDasharray={s.role === "benchmark" ? "5 4" : undefined}
+                      dot={false}
+                      isAnimationActive={false}
+                      activeDot={{ r: 3, fill: color, strokeWidth: 0 }}
+                      connectNulls
+                    />
+                  );
+                })}
+              </LineChart>
+            </ChartContainer>
+
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1.5">
+              {data.series.filter((s) => !s.error).map((s) => {
+                const allIdx = data.series.indexOf(s);
+                const peerIdx = data.series.slice(0, allIdx + 1).filter((x) => x.role === "peer").length - 1;
+                const color = peerSeriesColor(s.role, Math.max(0, peerIdx));
+                const last = [...data.points].reverse().find((row) => isNum(row[s.id]));
+                return (
+                  <span key={s.id} className="inline-flex items-center gap-1.5 font-mono text-[11px] tabular-nums">
+                    <span className="size-2 rounded-full" style={{ backgroundColor: color }} />
+                    <span className="text-muted-foreground">{s.label}</span>
+                    {last && (
+                      <span className={cn("font-medium", last[s.id] >= 0 ? "text-under" : "text-over")}>
+                        {last[s.id] >= 0 ? "+" : ""}{fmt(last[s.id])}%
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ————— street pulse: news + social sentiment ————— */
 function timeAgo(t) {
   if (!t) return "";
@@ -703,7 +1048,206 @@ const PUBLISHER_DOMAINS = {
   "forbes": "forbes.com",
 };
 
-function SentimentPanel({ ticker }) {
+function stocktwitsMoodMeta(tagged, bullPct) {
+  if (tagged === 0) {
+    return { label: "No tags", badgeClass: "border border-border bg-secondary text-muted-foreground" };
+  }
+  if (bullPct >= 60) {
+    return { label: "Mostly bullish", badgeClass: "bg-under-soft text-under" };
+  }
+  if (bullPct <= 40) {
+    return { label: "Mostly bearish", badgeClass: "bg-over-soft text-over" };
+  }
+  return { label: "Mixed", badgeClass: "bg-secondary text-muted-foreground" };
+}
+
+function stocktwitsMoodSummary(st, bullPct, tagged) {
+  const tagCoverage = tagged / st.total;
+  const coveragePct = Math.round(tagCoverage * 100);
+
+  if (tagged === 0) {
+    return `None of the ${st.total} recent posts were sentiment-tagged.`;
+  }
+
+  const lowSample = tagged < 5 || tagCoverage < 0.25;
+
+  if (st.bearish === 0 && st.bullish > 0) {
+    if (lowSample) {
+      return `All ${st.bullish} tagged ${st.bullish === 1 ? "post is" : "posts are"} bullish — only ${coveragePct}% of recent posts were tagged`;
+    }
+    return `All tagged posts are bullish (${st.bullish} of ${tagged} tagged)`;
+  }
+
+  if (st.bullish === 0 && st.bearish > 0) {
+    if (lowSample) {
+      return `All ${st.bearish} tagged ${st.bearish === 1 ? "post is" : "posts are"} bearish — only ${coveragePct}% of recent posts were tagged`;
+    }
+    return `All tagged posts are bearish (${st.bearish} of ${tagged} tagged)`;
+  }
+
+  if (lowSample) {
+    return `${bullPct}% of tagged posts are bullish — only ${coveragePct}% of recent posts were tagged`;
+  }
+
+  return `${bullPct}% of tagged posts are bullish (${st.bullish} of ${tagged} tagged)`;
+}
+
+const OUTLOOK_LEAN_META = {
+  bullish: { label: "Leans bullish", badgeClass: "bg-under-soft text-under", dot: "bg-under" },
+  bearish: { label: "Leans bearish", badgeClass: "bg-over-soft text-over", dot: "bg-over" },
+  mixed: { label: "Mixed signals", badgeClass: "bg-secondary text-muted-foreground", dot: "bg-muted-foreground" },
+};
+
+const SIGNAL_LEAN_DOT = {
+  bullish: "bg-under",
+  bearish: "bg-over",
+  neutral: "bg-muted-foreground/40",
+};
+
+function OutlookSection({ title, group, narrative }) {
+  const meta = OUTLOOK_LEAN_META[group.lean] || OUTLOOK_LEAN_META.mixed;
+  if (!group.signals.length) {
+    return (
+      <div className="rounded-lg bg-muted/30 px-3 py-2.5 ring-1 ring-foreground/5">
+        <div className="flex items-center justify-between gap-2">
+          <SectionLabel className="mb-0">{title}</SectionLabel>
+          <Badge className="h-5 rounded-4xl border border-border bg-secondary px-2 font-mono text-[11px] font-medium text-muted-foreground">
+            No data
+          </Badge>
+        </div>
+        <p className="m-0 mt-1.5 text-[11px] text-muted-foreground">Not enough signals to form an outlook.</p>
+      </div>
+    );
+  }
+
+  const bullish = group.signals.filter((s) => s.lean === "bullish").length;
+  const bearish = group.signals.filter((s) => s.lean === "bearish").length;
+  const neutral = group.signals.length - bullish - bearish;
+
+  return (
+    <div className="rounded-lg bg-muted/30 px-3 py-2.5 ring-1 ring-foreground/5">
+      <div className="flex items-center justify-between gap-2">
+        <SectionLabel className="mb-0">{title}</SectionLabel>
+        <Badge className={cn("h-5 rounded-4xl px-2 font-mono text-[11px] font-medium tabular-nums", meta.badgeClass)}>
+          {meta.label}
+        </Badge>
+      </div>
+
+      <div
+        className="mt-2 flex h-2 overflow-hidden rounded-full bg-border"
+        role="img"
+        aria-label={`${bullish} bullish, ${bearish} bearish, ${neutral} neutral signals`}
+      >
+        {bullish > 0 && <div className="bg-under" style={{ width: `${(bullish / group.signals.length) * 100}%` }} />}
+        {bearish > 0 && <div className="bg-over" style={{ width: `${(bearish / group.signals.length) * 100}%` }} />}
+        {neutral > 0 && (
+          <div className="bg-muted-foreground/25" style={{ width: `${(neutral / group.signals.length) * 100}%` }} />
+        )}
+      </div>
+
+      <ul className="m-0 mt-2 flex list-none flex-col gap-1 p-0">
+        {group.signals.map((s) => (
+          <li key={s.id} className="flex items-baseline gap-2 text-[11px] leading-snug">
+            <span className={cn("mt-1 size-2 shrink-0 rounded-full", SIGNAL_LEAN_DOT[s.lean])} aria-hidden />
+            <span>
+              <span className="font-medium text-foreground/90">{s.label}</span>
+              <span className="text-muted-foreground"> · {s.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {narrative && (
+        <p className="m-0 mt-2 border-t border-border/60 pt-2 text-[12px] leading-relaxed text-pretty text-foreground/90">
+          {narrative}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function OutlookCard({ ticker }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    setData(null);
+    setError(null);
+    fetch(`/api/outlook/${encodeURIComponent(ticker)}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error?.message || `Outlook request failed (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((d) => { if (alive) setData(d); })
+      .catch((e) => { if (alive) setError(e.message); });
+    return () => { alive = false; };
+  }, [ticker]);
+
+  if (error) return null;
+
+  if (!data) {
+    return (
+      <div className="border-t border-border px-4 pb-3 pt-3.5">
+        <Skeleton className="h-3.5 w-40" />
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-28 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  const industryTitle = data.industry
+    ? data.industry
+    : data.sector
+      ? `${data.sector}${data.sectorEtf ? ` (${data.sectorEtf})` : ""}`
+      : "Industry";
+
+  return (
+    <div className="border-t border-border px-4 pb-3 pt-3.5">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <SectionLabel>Forward outlook</SectionLabel>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="How is the forward outlook calculated?"
+                className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
+              >
+                <InfoIcon className="size-3" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-60 font-sans normal-case tracking-normal">
+              Combines analyst targets, valuation, momentum, quality scores, social mood, peer
+              performance, and sector ETF trends. AI narrative (when available) summarizes these
+              signals — not a price forecast.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+
+      <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+        <OutlookSection
+          title={data.ticker}
+          group={data.outlook.ticker}
+          narrative={data.narrative.ticker}
+        />
+        <OutlookSection
+          title={industryTitle}
+          group={data.outlook.industry}
+          narrative={data.narrative.industry}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SentimentPanel({ ticker, className }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -728,7 +1272,7 @@ function SentimentPanel({ ticker }) {
 
   if (!data) {
     return (
-      <div className="flex flex-col gap-2 border-b px-4 py-3">
+      <div className={cn("flex flex-col gap-2 px-4 py-3", className)}>
         <Skeleton className="h-3.5 w-56" />
         <Skeleton className="h-3.5 w-full" />
         <Skeleton className="h-3.5 w-4/5" />
@@ -739,9 +1283,14 @@ function SentimentPanel({ ticker }) {
   const st = data.stocktwits;
   const tagged = st ? st.bullish + st.bearish : 0;
   const bullPct = tagged > 0 ? Math.round((st.bullish / tagged) * 100) : null;
+  const untagged = st ? st.total - tagged : 0;
+  const bullShare = st?.total ? (st.bullish / st.total) * 100 : 0;
+  const bearShare = st?.total ? (st.bearish / st.total) * 100 : 0;
+  const untaggedShare = st?.total ? (untagged / st.total) * 100 : 0;
+  const moodMeta = st && st.total > 0 ? stocktwitsMoodMeta(tagged, bullPct) : null;
   // StockTwits only knows plain US-style symbols (same normalization as the server)
   const stocktwitsUrl = `https://stocktwits.com/symbol/${encodeURIComponent(ticker.split(".")[0])}`;
-  if (!data.tldr && !st && data.news.length === 0) return null;
+  const hasSentimentContent = hasTldrSections(data.tldrSections) || st || data.news.length > 0;
 
   // distinct outlet domains for the favicon stack + total items analyzed
   const domains = [...new Set(
@@ -755,11 +1304,26 @@ function SentimentPanel({ ticker }) {
   const sourceCount = data.news.length + (st ? st.total : 0);
 
   return (
-    <div className="border-b px-4 py-3">
+    <div className={cn("px-4 py-3", className)}>
+      {hasSentimentContent && (
+        <>
       <SectionLabel className="mb-2">Street pulse — news & social TL;DR</SectionLabel>
 
-      {data.tldr ? (
-        <p className="m-0 text-sm leading-relaxed">{data.tldr}</p>
+      {hasTldrSections(data.tldrSections) ? (
+        <div className="flex flex-col gap-3">
+          {SENTIMENT_SECTIONS.filter((s) => data.tldrSections[s.key]?.trim()).map((s) => {
+            const Icon = s.icon;
+            return (
+              <div key={s.key}>
+                <div className="mb-1 flex items-center gap-1.5">
+                  <Icon className="size-3.5 text-muted-foreground" aria-hidden />
+                  <SectionLabel className="mb-0">{s.label}</SectionLabel>
+                </div>
+                <p className="m-0 text-sm leading-relaxed text-pretty">{data.tldrSections[s.key]}</p>
+              </div>
+            );
+          })}
+        </div>
       ) : (
         <p className="m-0 text-[13px] text-muted-foreground">
           {data.tldrAvailable
@@ -768,51 +1332,100 @@ function SentimentPanel({ ticker }) {
         </p>
       )}
 
-      {bullPct !== null && (
-        <div className="mt-3.5">
-          <div className="flex h-2 overflow-hidden rounded-full">
-            <div className="bg-under" style={{ width: `${bullPct}%` }} />
-            <div className="bg-over" style={{ width: `${100 - bullPct}%` }} />
-          </div>
-          <div className="mt-1.5 flex justify-between font-mono text-xs tabular-nums">
-            <span className="text-under">
-              ▲ {bullPct}% bullish (
-              <a
-                href={stocktwitsUrl}
-                target="_blank"
-                rel="noreferrer"
-                title="Open the StockTwits stream in a new tab"
-                className="underline decoration-under/40 underline-offset-2 hover:decoration-under"
-              >
-                {st.bullish}
-              </a>
-              )
-            </span>
-            <span className="text-muted-foreground">
-              last{" "}
-              <a
-                href={stocktwitsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="underline decoration-muted-foreground/40 underline-offset-2 hover:text-foreground hover:decoration-foreground"
-              >
-                {st.total} StockTwits posts
-              </a>
-            </span>
-            <span className="text-over">
-              ▼ {100 - bullPct}% bearish (
-              <a
-                href={stocktwitsUrl}
-                target="_blank"
-                rel="noreferrer"
-                title="Open the StockTwits stream in a new tab"
-                className="underline decoration-over/40 underline-offset-2 hover:decoration-over"
-              >
-                {st.bearish}
-              </a>
-              )
+      {(moodMeta || data.news.length > 0) && (
+        <SectionLabel className="mb-0 mt-3.5">Market signals</SectionLabel>
+      )}
+
+      {moodMeta && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between gap-2">
+            <SectionLabel>StockTwits mood</SectionLabel>
+            <span className="inline-flex items-center gap-1">
+              <Badge className={cn("h-5 rounded-4xl px-2 font-mono text-[11px] font-medium tabular-nums", moodMeta.badgeClass)}>
+                {moodMeta.label}
+              </Badge>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="How is StockTwits mood calculated?"
+                      className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
+                    >
+                      <InfoIcon className="size-3" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-56 font-sans normal-case tracking-normal">
+                    The bar shows each post&apos;s share of the last {st.total} messages — bullish,
+                    bearish, or untagged. The badge reflects the split among tagged posts only.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </span>
           </div>
+
+          {tagged > 0 ? (
+            <div
+              className="mt-1.5 flex h-2.5 overflow-hidden rounded-full bg-border"
+              role="img"
+              aria-label={`${st.bullish} bullish, ${st.bearish} bearish, ${untagged} untagged out of ${st.total} recent posts`}
+            >
+              {bullShare > 0 && <div className="bg-under" style={{ width: `${bullShare}%` }} />}
+              {bearShare > 0 && <div className="bg-over" style={{ width: `${bearShare}%` }} />}
+              {untaggedShare > 0 && (
+                <div className="bg-muted-foreground/25" style={{ width: `${untaggedShare}%` }} />
+              )}
+            </div>
+          ) : (
+            <p className="m-0 mt-1.5 text-[11px] text-muted-foreground">
+              No sentiment tags in recent posts.
+            </p>
+          )}
+
+          {tagged > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-under" aria-hidden />
+                <a
+                  href={stocktwitsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open the StockTwits stream in a new tab"
+                  className="text-under underline decoration-under/40 underline-offset-2 hover:decoration-under"
+                >
+                  {st.bullish} bullish
+                </a>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-over" aria-hidden />
+                <a
+                  href={stocktwitsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open the StockTwits stream in a new tab"
+                  className="text-over underline decoration-over/40 underline-offset-2 hover:decoration-over"
+                >
+                  {st.bearish} bearish
+                </a>
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                <span className="size-2 rounded-full bg-muted-foreground/25" aria-hidden />
+                {untagged} untagged
+              </span>
+            </div>
+          )}
+
+          <p className="m-0 mt-1 text-[11px] text-muted-foreground">
+            {stocktwitsMoodSummary(st, bullPct, tagged)} on{" "}
+            <a
+              href={stocktwitsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-muted-foreground/40 underline-offset-2 hover:text-foreground hover:decoration-foreground"
+            >
+              StockTwits
+            </a>
+          </p>
         </div>
       )}
 
@@ -863,6 +1476,31 @@ function SentimentPanel({ ticker }) {
           <span className="font-medium text-foreground/70">{sourceCount} sources</span>
         </div>
       )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function VerdictSummaryStrip({ results, composite, strategyCount }) {
+  const summary = summarizeGroupVerdicts(results);
+  if (!summary && !composite) return null;
+  return (
+    <div className="border-b bg-muted/20 px-4 py-2.5">
+      <p className="m-0 font-mono text-xs tabular-nums text-muted-foreground">
+        {summary}
+        {composite ? ` · score ${composite.value}/100` : ""}
+        {` · ${strategyCount} selected ${strategyCount === 1 ? "strategy" : "strategies"}`}
+      </p>
+    </div>
+  );
+}
+
+function AiUnavailableBanner({ visible }) {
+  if (!visible) return null;
+  return (
+    <div className="border-b bg-muted/30 px-4 py-2 text-[12px] text-muted-foreground">
+      AI summaries unavailable — showing rule-based verdicts and raw market data.
     </div>
   );
 }
@@ -870,20 +1508,46 @@ function SentimentPanel({ ticker }) {
 function OpinionPanel({ report }) {
   if (report.opinionStatus === "loading") {
     return (
-      <div className="flex flex-col gap-2 border-b px-4 py-3">
-        <Skeleton className="h-3.5 w-2/3" />
-        <Skeleton className="h-3.5 w-full" />
-        <Skeleton className="h-3.5 w-5/6" />
+      <div className="flex flex-col gap-3 border-b px-4 py-3">
+        <Skeleton className="h-3.5 w-24" />
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="h-3.5 w-full" />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3.5 w-5/6" />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="h-3.5 w-4/5" />
+        </div>
       </div>
     );
   }
   if (report.opinionStatus === "error" || !report.opinion) return null;
+
+  const sections = OPINION_SECTIONS.filter((s) => report.opinion[s.key]?.trim());
+  if (sections.length === 0) return null;
+
   return (
-    <div className="border-b border-l-2 border-l-primary px-4 py-3">
+    <div className="border-b px-4 py-3">
       <SectionLabel className="mb-2 text-primary">Tausta's read</SectionLabel>
-      <p className="m-0 text-sm leading-relaxed">{report.opinion}</p>
-      <div className="mt-2 text-xs text-muted-foreground">
-        AI-written synthesis of the signals above — a perspective, not a recommendation.
+      <div className="flex flex-col gap-3">
+        {sections.map((s) => {
+          const Icon = s.icon;
+          return (
+            <div key={s.key}>
+              <div className="mb-1 flex flex-col gap-1">
+                <Icon className="size-3.5 text-muted-foreground" aria-hidden />
+                <SectionLabel className="mb-0">{s.label}</SectionLabel>
+              </div>
+              <p className="m-0 text-sm leading-relaxed text-pretty">
+                {report.opinion[s.key]}
+              </p>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -892,31 +1556,130 @@ function OpinionPanel({ report }) {
 function StrategyRow({ strat, result }) {
   const [open, setOpen] = useState(false);
   const m = KIND_META[result.kind];
+  const isNa = result.kind === "na";
+  const { primary, secondary } = splitDetail(result.detail);
+
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-b px-4 py-2.5 last:border-b-0">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
-        <span className="min-w-44 text-sm font-semibold">{strat.name}</span>
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/30"
+    >
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-x-2 gap-y-1">
+        <span className="text-sm font-medium leading-snug">{strat.name}</span>
         <Tag kind={result.kind} />
         <CollapsibleTrigger asChild>
           <Button
             variant="ghost"
             size="icon-xs"
             aria-label="Method notes"
-            className="relative ml-auto -mr-1 self-center text-muted-foreground after:absolute after:-inset-2"
+            className="relative -mr-1 text-muted-foreground after:absolute after:-inset-2"
           >
-            <ChevronDownIcon className={cn("transition-transform", open && "rotate-180")} />
+            <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
           </Button>
         </CollapsibleTrigger>
       </div>
-      <div className="mt-1 font-mono text-[13px] tabular-nums">{result.detail}</div>
+      {!isNa && (
+        <>
+          <p className="mt-1 mb-0 font-mono text-[13px] tabular-nums leading-snug">{primary}</p>
+          {secondary && (
+            <p className="mt-0.5 mb-0 text-[13px] leading-snug text-muted-foreground text-pretty">{secondary}</p>
+          )}
+        </>
+      )}
       <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
-        <div className={cn("mt-3 border-l-2 pl-3 text-[13px] leading-relaxed text-muted-foreground", m.border)}>
+        <div className={cn("mt-2 border-l-2 pl-3 text-[13px] leading-relaxed text-muted-foreground", m.border)}>
           <p className="m-0">{strat.how}</p>
           <p className="m-0 mt-1.5"><strong className="font-semibold text-under">Pro:</strong> {strat.pros}</p>
           <p className="m-0 mt-1"><strong className="font-semibold text-over">Con:</strong> {strat.cons}</p>
         </div>
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function CompactStrategyRow({ strat, result }) {
+  const [open, setOpen] = useState(false);
+  const m = KIND_META[result.kind];
+  const isNa = result.kind === "na";
+  const { primary } = splitDetail(result.detail);
+  const detailText = isNa ? result.detail : primary;
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="rounded-lg px-1.5 py-1.5 transition-colors hover:bg-muted/30"
+    >
+      <div className={cn(
+        "grid items-baseline gap-x-2",
+        isNa ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_auto_auto]",
+      )}>
+        <span className="min-w-0 truncate text-sm leading-snug">
+          <span className="font-medium text-foreground">{strat.name}</span>
+          <span className="text-muted-foreground"> · </span>
+          <span
+            className={cn(
+              "text-xs tabular-nums",
+              isNa ? "text-muted-foreground" : "font-mono text-muted-foreground",
+            )}
+            title={detailText}
+          >
+            {detailText}
+          </span>
+        </span>
+        {!isNa && <Tag kind={result.kind} />}
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Method notes"
+            className="relative -mr-1 text-muted-foreground after:absolute after:-inset-2"
+          >
+            <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
+        <div className={cn("mt-2 border-l-2 pl-3 text-[13px] leading-relaxed text-muted-foreground", m.border)}>
+          <p className="m-0">{strat.how}</p>
+          <p className="m-0 mt-1.5"><strong className="font-semibold text-under">Pro:</strong> {strat.pros}</p>
+          <p className="m-0 mt-1"><strong className="font-semibold text-over">Con:</strong> {strat.cons}</p>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function StrategyGroup({ title, rows }) {
+  const summary = summarizeGroupVerdicts(rows);
+  const useSubclusters = title === "Valuation ratios";
+  const Row = useSubclusters ? CompactStrategyRow : StrategyRow;
+
+  const renderRows = (items) =>
+    items.map((r) => <Row key={r.strat.id} strat={r.strat} result={r.result} />);
+
+  return (
+    <section className="border-t border-border px-4 py-3 first:border-t-0">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="m-0 text-sm font-semibold text-foreground">{title}</h3>
+        {summary && <p className="m-0 text-xs text-muted-foreground">{summary}</p>}
+      </div>
+      {useSubclusters ? (
+        VALUATION_SUBCLUSTERS.map((cluster) => {
+          const clusterRows = rows.filter((r) => cluster.ids.includes(r.strat.id));
+          if (clusterRows.length === 0) return null;
+          return (
+            <div key={cluster.label} className="not-first:mt-2">
+              <SectionLabel className="mb-1 text-[11px] uppercase tracking-wide">{cluster.label}</SectionLabel>
+              <div className="flex flex-col gap-0.5">{renderRows(clusterRows)}</div>
+            </div>
+          );
+        })
+      ) : (
+        <div className="flex flex-col gap-1">{renderRows(rows)}</div>
+      )}
+    </section>
   );
 }
 
@@ -953,10 +1716,9 @@ function TickerReport({ report, selected, index }) {
   const d = report.data;
   const active = STRATEGIES.filter((s) => selected.has(s.id));
   const results = active.map((s) => ({ strat: s, result: s.evaluate(d) }));
-  const counted = results.filter((r) => r.result.kind !== "na");
-  const under = counted.filter((r) => r.result.kind === "under").length;
-  const cautions = counted.filter((r) => r.result.kind === "caution").length;
   const composite = computeComposite(active, d);
+  const aiUnavailable = report.opinionStatus === "error"
+    || (report.opinionStatus === "done" && !OPINION_SECTIONS.some((s) => report.opinion?.[s.key]?.trim()));
 
   return (
     <Card className="rise mt-6 gap-0 py-0" style={{ animationDelay: `${index * 100}ms` }}>
@@ -969,15 +1731,39 @@ function TickerReport({ report, selected, index }) {
           <div className="flex flex-col items-end gap-0.5">
             <div className="flex items-center justify-end gap-2.5">
               {composite && <Tag kind={composite.band.kind} label={composite.band.label} />}
-              <div className={cn("font-display text-2xl font-bold tabular-nums", composite ? KIND_META[composite.band.kind].text : "text-muted-foreground")}>
-                {composite ? composite.value : "—"}
-                <span className="text-sm font-normal text-muted-foreground"> / 100</span>
-              </div>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              value score · {under}/{counted.length} undervalued signals
-              {cautions > 0 && (
-                <span className="text-over"> · {cautions} caution flag{cautions > 1 ? "s" : ""}</span>
+              {composite ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        tabIndex={0}
+                        aria-label="How is the value score calculated?"
+                        className={cn(
+                          "font-display cursor-help text-2xl font-bold tabular-nums",
+                          KIND_META[composite.band.kind].text,
+                        )}
+                      >
+                        {composite.value}
+                        <span className="text-sm font-normal text-muted-foreground"> / 100</span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="max-w-64 font-sans normal-case tracking-normal">
+                      Weighted average of {composite.counted} selected valuation checks (0 = expensive,
+                      100 = cheap). Each check maps its metric to a 0–100 score; missing data is
+                      skipped. Higher weights count more toward the total.
+                      {composite.capped && (
+                        <span className="mt-1 block text-background/80">
+                          Capped at 50 — distress signals (weak Z-Score or F-Score).
+                        </span>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <div className="font-display text-2xl font-bold tabular-nums text-muted-foreground">
+                  —
+                  <span className="text-sm font-normal text-muted-foreground"> / 100</span>
+                </div>
               )}
             </div>
             {composite?.capped && (
@@ -988,20 +1774,21 @@ function TickerReport({ report, selected, index }) {
           </div>
         </div>
       </header>
+      <VerdictSummaryStrip results={results} composite={composite} strategyCount={active.length} />
+      <AiUnavailableBanner visible={aiUnavailable} />
+      <OpinionPanel report={report} />
+      <div className="border-b">
+        {GROUPS.map((g) => {
+          const rows = results.filter((r) => r.strat.group === g);
+          if (rows.length === 0) return null;
+          return <StrategyGroup key={g} title={g} rows={rows} />;
+        })}
+      </div>
       <PriceContext d={d} />
       <PriceChart ticker={report.ticker} currency={d.currency} />
-      <OpinionPanel report={report} />
+      <PeerCompareChart ticker={report.ticker} />
       <SentimentPanel ticker={report.ticker} />
-      {GROUPS.map((g) => {
-        const rows = results.filter((r) => r.strat.group === g);
-        if (rows.length === 0) return null;
-        return (
-          <div key={g} className="last:pb-1">
-            <SectionLabel className="px-4 pb-1 pt-3">{g}</SectionLabel>
-            {rows.map((r) => <StrategyRow key={r.strat.id} strat={r.strat} result={r.result} />)}
-          </div>
-        );
-      })}
+      <OutlookCard ticker={report.ticker} />
     </Card>
   );
 }
@@ -1056,7 +1843,7 @@ export default function Tausta() {
 
   return (
     <div className="min-h-screen">
-      <div className="mx-auto max-w-4xl px-5 pb-20 pt-10">
+      <div className="mx-auto max-w-5xl px-5 pb-20 pt-10">
 
         <header className="rise border-b pb-4">
           <h1 className="font-display mb-1 mt-0.5 text-3xl font-bold leading-tight">

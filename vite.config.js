@@ -5,7 +5,9 @@ import tailwindcss from "@tailwindcss/vite";
 import {
   fetchYahooMetrics,
   fetchYahooChart,
+  fetchPeerCompare,
   fetchStreetData,
+  fetchOutlook,
   searchYahooSymbols,
   writeSentimentSummary,
 } from "./api/_lib/yahoo.js";
@@ -28,9 +30,9 @@ function apiRoutes(apiKey) {
         try {
           const data = await fetchStreetData(ticker);
           const summary = await writeSentimentSummary(apiKey, ticker, data)
-            .catch(() => ({ tldr: null, headlineSentiments: [] }));
+            .catch(() => ({ tldrSections: null, headlineSentiments: [] }));
           res.end(JSON.stringify({
-            tldr: summary.tldr,
+            tldrSections: summary.tldrSections,
             tldrAvailable: Boolean(apiKey),
             news: data.news.slice(0, 5).map(({ title, publisher, link, time }, i) => ({
               title, publisher, link, time,
@@ -60,6 +62,26 @@ function apiRoutes(apiKey) {
         try {
           const chart = await fetchYahooChart(ticker, range);
           res.end(JSON.stringify(chart));
+        } catch (err) {
+          res.statusCode = 502;
+          res.end(JSON.stringify({ error: { message: err.message } }));
+        }
+      });
+
+      // GET /api/peers/:ticker?range=1mo — normalized performance vs top peers + S&P 500
+      server.middlewares.use("/api/peers", async (req, res) => {
+        const [pathPart, queryPart] = (req.url || "/").split("?");
+        const ticker = decodeURIComponent(pathPart.replace(/^\//, "")).trim();
+        const range = new URLSearchParams(queryPart).get("range") || "1mo";
+        res.setHeader("Content-Type", "application/json");
+        if (!ticker) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: "Missing ticker" } }));
+          return;
+        }
+        try {
+          const data = await fetchPeerCompare(ticker, range);
+          res.end(JSON.stringify(data));
         } catch (err) {
           res.statusCode = 502;
           res.end(JSON.stringify({ error: { message: err.message } }));
@@ -100,6 +122,26 @@ function apiRoutes(apiKey) {
         try {
           const metrics = await fetchYahooMetrics(ticker);
           res.end(JSON.stringify(metrics));
+        } catch (err) {
+          res.statusCode = 502;
+          res.end(JSON.stringify({ error: { message: err.message } }));
+        }
+      });
+
+      // GET /api/outlook/:ticker — data-driven forward outlook for stock + sector
+      server.middlewares.use("/api/outlook", async (req, res) => {
+        const ticker = decodeURIComponent(
+          (req.url || "/").split("?")[0].replace(/^\//, "")
+        ).trim();
+        res.setHeader("Content-Type", "application/json");
+        if (!ticker) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: "Missing ticker" } }));
+          return;
+        }
+        try {
+          const data = await fetchOutlook(ticker, apiKey);
+          res.end(JSON.stringify(data));
         } catch (err) {
           res.statusCode = 502;
           res.end(JSON.stringify({ error: { message: err.message } }));
