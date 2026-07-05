@@ -68,7 +68,7 @@ function apiRoutes(apiKey) {
         }
       });
 
-      // GET /api/peers/:ticker?range=1mo — normalized performance vs top peers + S&P 500
+      // GET /api/peers/:ticker?range=1mo — normalized performance vs industry peers + S&P 500
       server.middlewares.use("/api/peers", async (req, res) => {
         const [pathPart, queryPart] = (req.url || "/").split("?");
         const ticker = decodeURIComponent(pathPart.replace(/^\//, "")).trim();

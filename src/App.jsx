@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChartLineIcon, ChevronDownIcon, InfoIcon, MegaphoneIcon, ScaleIcon, SearchIcon, ShieldAlertIcon, TrendingUpIcon, TriangleAlertIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BadgePercentIcon, Building2Icon, ChartLineIcon, ChevronDownIcon, CoinsIcon, CompassIcon, GraduationCapIcon, InfoIcon, LandmarkIcon, LayersIcon, MegaphoneIcon, ScaleIcon, SearchIcon, ShieldAlertIcon, SlidersHorizontalIcon, TrendingUpIcon, TriangleAlertIcon } from "lucide-react";
 import { Area, AreaChart, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts";
 
 import { cn } from "@/lib/utils";
@@ -13,6 +13,15 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   InputGroup,
   InputGroupAddon,
@@ -260,6 +269,124 @@ const STRATEGIES = [
 
 const GROUPS = ["Valuation ratios", "Intrinsic value", "Price context", "Quality & risk"];
 
+const STORAGE_RECENT = "tausta-recent-searches";
+const STORAGE_DEMO_SEEN = "tausta-demo-seen";
+const STORAGE_STRATEGIES = "tausta-strategies";
+const MAX_RECENT_SEARCHES = 5;
+
+const STARTER_PRESETS = [
+  {
+    id: "demo",
+    icon: GraduationCapIcon,
+    label: "See how it works",
+    tickers: ["BRK.B"],
+    hint: "Classic value case — most strategies fire",
+  },
+  {
+    id: "contrast",
+    icon: LayersIcon,
+    label: "Value · growth · turnaround",
+    tickers: ["BRK.B", "NVDA", "INTC"],
+    hint: "Three profiles side by side",
+  },
+  {
+    id: "megacap",
+    icon: Building2Icon,
+    label: "Megacap trio",
+    tickers: ["AAPL", "MSFT", "GOOGL"],
+    hint: "Same sector — different value scores",
+  },
+  {
+    id: "trap",
+    icon: BadgePercentIcon,
+    label: "Cheap or trap?",
+    tickers: ["INTC", "F", "T"],
+    hint: "Low ratios — quality checks still matter",
+  },
+  {
+    id: "dividend",
+    icon: CoinsIcon,
+    label: "Dividend income",
+    tickers: ["KO", "JNJ", "PG"],
+    hint: "Yield & payout sustainability",
+  },
+  {
+    id: "growth",
+    icon: TrendingUpIcon,
+    label: "Growth stress-test",
+    tickers: ["NVDA", "META", "AMZN"],
+    hint: "Rich P/E — any value case left?",
+  },
+  {
+    id: "banks",
+    icon: LandmarkIcon,
+    label: "Banks & balance sheets",
+    tickers: ["JPM", "BAC", "WFC"],
+    hint: "P/B and quality scores matter here",
+  },
+  {
+    id: "global",
+    icon: CompassIcon,
+    label: "Global ADRs",
+    tickers: ["TSM", "ASML", "NVO"],
+    hint: "Same strategies, different markets",
+  },
+];
+
+const QUICK_TICKERS = ["AAPL", "MSFT", "KO", "INTC"];
+
+function parseTickerInput(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const tokens = /[,;]/.test(trimmed) ? trimmed.split(/[,;]+/) : trimmed.split(/\s+/);
+  return [...new Set(tokens.map((t) => t.trim().toUpperCase()).filter(Boolean))].slice(0, 3);
+}
+
+function loadRecentSearches() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_RECENT) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry) => typeof entry === "string" && entry.trim())
+      .slice(0, MAX_RECENT_SEARCHES)
+      .map((entry) => parseTickerInput(entry.replace(/,/g, " ")));
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentSearch(tickers) {
+  const label = tickers.join(", ");
+  const prev = loadRecentSearches().map((t) => t.join(", "));
+  const next = [label, ...prev.filter((e) => e !== label)].slice(0, MAX_RECENT_SEARCHES);
+  try {
+    localStorage.setItem(STORAGE_RECENT, JSON.stringify(next));
+  } catch {
+    // ignore quota / private mode
+  }
+  return next.map((entry) => parseTickerInput(entry.replace(/,/g, " ")));
+}
+
+function loadSelectedStrategies() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_STRATEGIES) || "null");
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((id) => STRATEGIES.some((s) => s.id === id))) {
+      return new Set(parsed);
+    }
+  } catch {
+    // ignore
+  }
+  return new Set(STRATEGIES.map((s) => s.id));
+}
+
+function saveSelectedStrategies(selected) {
+  try {
+    localStorage.setItem(STORAGE_STRATEGIES, JSON.stringify([...selected]));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
 const VALUATION_SUBCLUSTERS = [
   { label: "Earnings multiples", ids: ["pe_industry", "forward_pe", "peg"] },
   { label: "Asset & cash flow", ids: ["pb", "pfcf", "ev_ebitda"] },
@@ -301,6 +428,39 @@ function rangePlainSummary(d, pos) {
     headline: "Today's price is midway between the 52-week low and high",
     detail: `${fmtMoney(price, currency)} sits ${pct(pos)} of the way from low to high`,
   };
+}
+function rangeVsExpectedSummary(d) {
+  if (!isNum(d.analyst_target) || !isNum(d.price) || d.price <= 0) return null;
+  const upside = (d.analyst_target - d.price) / d.price;
+  const targetStr = fmtMoney(d.analyst_target, d.currency);
+  if (upside > 0.05) {
+    return { line: `${pct(upside)} below expected price (${targetStr})`, below: true, upside };
+  }
+  if (upside < -0.05) {
+    return { line: `${pct(Math.abs(upside))} above expected price (${targetStr})`, below: false, upside };
+  }
+  return { line: `Near expected price (${targetStr})`, below: null, upside };
+}
+function rangeTrackAriaLabel(pos, expectedSummary) {
+  let label = `Today at ${pct(pos)} of 52-week range`;
+  if (!expectedSummary) return label;
+  if (expectedSummary.below === true) {
+    return `${label}; ${pct(expectedSummary.upside)} below expected price`;
+  }
+  if (expectedSummary.below === false) {
+    return `${label}; ${pct(Math.abs(expectedSummary.upside))} above expected price`;
+  }
+  return `${label}; near expected price`;
+}
+/** Center a 2px track tick on `fraction` along the bar (0 = low, 1 = high). */
+function rangeTrackTickStyle(fraction) {
+  return { left: `calc(${fraction * 100}% - 1px)` };
+}
+/** Center an 8px dot label on `fraction`, or pin to bar edge when off-range. */
+function rangeMarkerLabelStyle(fraction, edge = "center") {
+  if (edge === "high") return { left: "calc(100% - 4px)" };
+  if (edge === "low") return { left: "4px", transform: "translateX(-50%)" };
+  return { left: `${fraction * 100}%`, transform: "translateX(-50%)" };
 }
 function verdict(kind, detail) { return { kind, detail }; }
 function na() { return { kind: "na", detail: "Data not available for this metric" }; }
@@ -345,6 +505,12 @@ function computeComposite(strategies, d) {
   const rounded = Math.round(value);
   const band = SCORE_BANDS.find((b) => rounded >= b.min);
   return { value: rounded, band, capped, counted: scored.length };
+}
+
+function reportComposite(report, selected) {
+  if (report.status !== "done" || !report.data) return null;
+  const active = STRATEGIES.filter((s) => selected.has(s.id));
+  return computeComposite(active, report.data);
 }
 
 const KIND_META = {
@@ -409,9 +575,9 @@ const OPINION_SECTIONS = [
 ];
 
 const SENTIMENT_SECTIONS = [
-  { key: "sentiment_lean", label: "Overall sentiment", icon: TrendingUpIcon },
-  { key: "dominant_narrative", label: "Dominant narrative", icon: MegaphoneIcon },
-  { key: "bearish_counterpoint", label: "Bearish counterpoint", icon: ShieldAlertIcon },
+  { key: "sentiment_lean", label: "Sentiment", icon: TrendingUpIcon },
+  { key: "dominant_narrative", label: "Narrative", icon: MegaphoneIcon },
+  { key: "bearish_counterpoint", label: "Bearish", icon: ShieldAlertIcon },
 ];
 
 function hasTldrSections(sections) {
@@ -452,6 +618,70 @@ function parseOpinionResponse(text) {
   }
 
   return { price_context: "", strategy_read: trimmed, key_caveat: "" };
+}
+
+const OPINION_EMPHASIS_PATTERNS = {
+  all: [
+    /\$[\d,]+(?:\.\d+)?/g,
+    /\d+(?:\.\d+)?%/g,
+    /\b\d+\s+of\s+\d+\b/gi,
+    /\b(?:lower|upper)\s+quartile\b/gi,
+    /\b(?:Altman Z-Score|Piotroski F-Score|Graham Number|EV\/EBITDA|Z-Score|F-Score)\s*(?:of\s*)?[\d.]+(?:\/\d+)?/gi,
+  ],
+  strategy_read: [
+    /\b(?:undervalued|overvalued|fair value|potential cheapness)\b/gi,
+    /\b(?:Graham Number|EV\/EBITDA|dividend yield|analyst target(?:\s+gap)?|P\/FCF|P\/B|P\/E)\b/gi,
+  ],
+  key_caveat: [
+    /\b(?:financial stress|value[- ]trap|distress|heavily leveraged|negative (?:free )?cash flow|rational pricing)[^,;.]*/gi,
+  ],
+};
+
+function mergeEmphasisRanges(ranges) {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const r of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) {
+      last.end = Math.max(last.end, r.end);
+    } else {
+      merged.push({ ...r });
+    }
+  }
+  return merged;
+}
+
+function emphasizeOpinionText(text, sectionKey) {
+  if (!text) return text;
+  const patterns = [
+    ...OPINION_EMPHASIS_PATTERNS.all,
+    ...(OPINION_EMPHASIS_PATTERNS[sectionKey] || []),
+  ];
+  const ranges = [];
+  for (const pattern of patterns) {
+    const re = new RegExp(pattern.source, pattern.flags);
+    let match = re.exec(text);
+    while (match) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+      match = re.exec(text);
+    }
+  }
+  const merged = mergeEmphasisRanges(ranges);
+  if (merged.length === 0) return text;
+
+  const parts = [];
+  let pos = 0;
+  merged.forEach((r, i) => {
+    if (pos < r.start) parts.push(text.slice(pos, r.start));
+    parts.push(
+      <strong key={`${sectionKey}-${r.start}-${i}`} className="font-semibold text-foreground">
+        {text.slice(r.start, r.end)}
+      </strong>,
+    );
+    pos = r.end;
+  });
+  if (pos < text.length) parts.push(text.slice(pos));
+  return parts;
 }
 
 async function fetchOpinion(ticker, d, results) {
@@ -503,7 +733,7 @@ function SectionLabel({ children, className }) {
   );
 }
 
-function PriceContext({ d }) {
+function PriceContext({ d, hidePrice = false }) {
   const hasRange = isNum(d.week52_low) && isNum(d.week52_high) && isNum(d.price) && d.week52_high > d.week52_low;
   const pos = hasRange ? Math.min(1, Math.max(0, (d.price - d.week52_low) / (d.week52_high - d.week52_low))) : null;
   const tPos = hasRange && isNum(d.analyst_target)
@@ -520,21 +750,33 @@ function PriceContext({ d }) {
   ];
   return (
     <div className="border-b bg-background/60 px-4 pt-2 pb-2">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-display text-4xl font-bold tabular-nums">
-          {isNum(d.price) ? fmtMoney(d.price, d.currency) : "—"}
-        </span>
-        {isNum(chg) && (
-          <span className={cn("font-mono text-sm font-medium tabular-nums", chg >= 0 ? "text-under" : "text-over")}>
-            {chg >= 0 ? "▲" : "▼"} {fmt(Math.abs(chg))}% today
+      {!hidePrice && (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="font-display text-4xl font-bold tabular-nums">
+            {isNum(d.price) ? fmtMoney(d.price, d.currency) : "—"}
           </span>
-        )}
-      </div>
+          {isNum(chg) && (
+            <span className={cn("font-mono text-sm font-medium tabular-nums", chg >= 0 ? "text-under" : "text-over")}>
+              {chg >= 0 ? "▲" : "▼"} {fmt(Math.abs(chg))}% today
+            </span>
+          )}
+        </div>
+      )}
 
       {hasRange && (() => {
         const summary = rangePlainSummary(d, pos);
+        const expectedSummary = rangeVsExpectedSummary(d);
+        const hasTarget = isNum(d.analyst_target);
+        const rawTPos = hasTarget
+          ? (d.analyst_target - d.week52_low) / (d.week52_high - d.week52_low)
+          : null;
+        const targetInRange = hasTarget && rawTPos >= 0 && rawTPos <= 1;
+        const targetAboveHigh = hasTarget && rawTPos > 1;
+        const targetBelowLow = hasTarget && rawTPos < 0;
+        const labelsClose = targetInRange && tPos !== null && Math.abs(pos - tPos) < 0.12;
+
         return (
-        <div className="mt-4 cursor-default select-none">
+        <div className={cn("cursor-default select-none", hidePrice ? "mt-0" : "mt-4")}>
           <div className="flex items-center gap-1">
             <SectionLabel className="mb-0">52-week range</SectionLabel>
             <TooltipProvider>
@@ -548,9 +790,10 @@ function PriceContext({ d }) {
                     <InfoIcon className="size-3" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-56 font-sans normal-case tracking-normal">
-                  Shows where today&apos;s price falls between the lowest and highest prices over
-                  the past year. This is price history, not a valuation verdict.
+                <TooltipContent className="max-w-60 font-sans normal-case tracking-normal">
+                  The Today marker shows the current price between the past year&apos;s low and high.
+                  Expected is the consensus analyst target — compare the two to see upside or downside
+                  vs expectations. Price history only, not a valuation verdict.
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -559,63 +802,123 @@ function PriceContext({ d }) {
           <p className="m-0 mt-1.5 text-sm text-foreground/90">{summary.headline}</p>
           <p className="m-0 mt-0.5 font-mono text-xs tabular-nums text-muted-foreground">
             {summary.detail}
+            {expectedSummary && ` · ${expectedSummary.line}`}
           </p>
 
           <div
             className="relative mt-3 h-2 rounded-full bg-border"
             role="img"
-            aria-label={`Price at ${pct(pos)} between 52-week low and high`}
+            aria-label={rangeTrackAriaLabel(pos, expectedSummary)}
           >
             <div
               className="absolute -inset-y-1 w-0.5 rounded-full bg-foreground"
-              style={{ left: `calc(${pos * 100}% - 1px)` }}
+              style={rangeTrackTickStyle(pos)}
             />
-            {tPos !== null && (
+            {targetInRange && tPos !== null && (
               <div
-                className="absolute -inset-y-1 w-0.5 bg-muted-foreground/70"
-                style={{ left: `calc(${tPos * 100}% - 1px)` }}
+                className="absolute -inset-y-1 w-0.5 rounded-full bg-muted-foreground/70"
+                style={rangeTrackTickStyle(tPos)}
+              />
+            )}
+            {hasTarget && targetAboveHigh && (
+              <div
+                className="absolute -inset-y-1 w-0.5 rounded-full bg-muted-foreground/70"
+                style={{ left: "calc(100% - 1px)" }}
+              />
+            )}
+            {hasTarget && targetBelowLow && (
+              <div
+                className="absolute -inset-y-1 w-0.5 rounded-full bg-muted-foreground/70"
+                style={{ left: 0 }}
               />
             )}
           </div>
 
-          <div className="relative mt-2">
-            <div className="flex justify-between gap-4 font-mono text-xs tabular-nums">
-              <span className="text-muted-foreground">
-                <span className="block text-[10px] uppercase tracking-wide">52-wk low</span>
-                {fmtMoney(d.week52_low, d.currency)}
-              </span>
-              <span className="text-right text-muted-foreground">
-                <span className="block text-[10px] uppercase tracking-wide">52-wk high</span>
-                {fmtMoney(d.week52_high, d.currency)}
-              </span>
-            </div>
-            {tPos !== null && tPos >= 0.14 && tPos <= 0.86 && (
-              <div className="relative mt-1 h-4 w-full">
+          <div className={cn("relative mt-2 font-mono text-xs tabular-nums", labelsClose ? "min-h-3" : "min-h-5")}>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="absolute top-0 flex cursor-default flex-col items-center gap-0.5 whitespace-nowrap"
+                    style={rangeMarkerLabelStyle(pos)}
+                  >
+                    <span className="size-2 shrink-0 rounded-full bg-foreground" aria-hidden />
+                    {!labelsClose && <span>Today</span>}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="font-mono tabular-nums">
+                  Today · {fmtMoney(d.price, d.currency)}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            {hasTarget && (
               <span
-                className="absolute top-0 inline-flex items-center gap-1 font-mono text-xs tabular-nums text-muted-foreground"
-                style={{ left: `${tPos * 100}%`, transform: `translateX(-${tPos * 100}%)` }}
+                className="absolute top-0 flex flex-col items-center gap-0.5 whitespace-nowrap text-muted-foreground"
+                style={rangeMarkerLabelStyle(
+                  tPos ?? 0,
+                  targetInRange ? "center" : targetAboveHigh ? "high" : "low",
+                )}
               >
-                target {fmtMoney(d.analyst_target, d.currency)}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label="What is the analyst target?"
-                        className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
-                      >
-                        <InfoIcon className="size-3" />
-                      </button>
+                      <span className="size-2 shrink-0 cursor-default rounded-full bg-muted-foreground/70" aria-hidden />
                     </TooltipTrigger>
-                    <TooltipContent className="max-w-56 font-sans normal-case tracking-normal">
-                      Average 12-month price target across the analysts covering this stock — a
-                      consensus estimate of fair value, not a guarantee.
+                    <TooltipContent className="font-mono tabular-nums">
+                      Expected · {fmtMoney(d.analyst_target, d.currency)}
+                      {(targetAboveHigh || targetBelowLow) && (
+                        <span className="mt-1 block text-background/80">
+                          {targetAboveHigh
+                            ? "Above the 52-week high — pinned to bar end"
+                            : "Below the 52-week low — pinned to bar start"}
+                        </span>
+                      )}
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
+                {!labelsClose && (
+                  <span className="inline-flex items-center gap-1">
+                    Expected
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label="What is the expected price?"
+                            className="relative cursor-help text-muted-foreground/70 transition-colors hover:text-foreground after:absolute after:-inset-2"
+                          >
+                            <InfoIcon className="size-3" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-56 font-sans normal-case tracking-normal">
+                          Average 12-month price target across the analysts covering this stock — a
+                          consensus estimate of fair value, not a guarantee.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </span>
+                )}
               </span>
-              </div>
             )}
+          </div>
+
+          {(targetAboveHigh || targetBelowLow) && (
+            <p className="m-0 mt-1 text-[11px] text-muted-foreground">
+              {targetAboveHigh
+                ? "Expected price sits above the 52-week high"
+                : "Expected price sits below the 52-week low"}
+            </p>
+          )}
+
+          <div className="mt-2 flex justify-between gap-4 font-mono text-xs tabular-nums text-muted-foreground">
+            <span>
+              <span className="text-[10px] uppercase tracking-wide">52-wk low</span>
+              {" "}{fmtMoney(d.week52_low, d.currency)}
+            </span>
+            <span className="text-right">
+              <span className="text-[10px] uppercase tracking-wide">52-wk high</span>
+              {" "}{fmtMoney(d.week52_high, d.currency)}
+            </span>
           </div>
         </div>
         );
@@ -675,7 +978,7 @@ function ChartPriceTooltip({ active, payload, range, symbol }) {
   );
 }
 
-function PriceChart({ ticker, currency }) {
+function PriceChart({ ticker, currency, className }) {
   const [range, setRange] = useState("1mo");
   const [cache, setCache] = useState({});
   const [error, setError] = useState(null);
@@ -709,7 +1012,7 @@ function PriceChart({ ticker, currency }) {
   const gradId = `vl-chart-${ticker.replace(/[^a-zA-Z0-9]/g, "")}`;
 
   return (
-    <div className="border-b px-4 py-3">
+    <div className={cn("border-b px-4 py-3", className)}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {change !== null ? (
           <span className={cn("font-mono text-xs font-medium tabular-nums", up ? "text-under" : "text-over")}>
@@ -884,7 +1187,7 @@ function PeerCompareChart({ ticker, className }) {
     <div className={cn("border-t border-border px-4 py-3", className)}>
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
         <span className="inline-flex items-center gap-1">
-          <SectionLabel className="mb-0">Vs. top peers & S&P 500</SectionLabel>
+          <SectionLabel className="mb-0">Vs. industry peers & S&P 500</SectionLabel>
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -897,8 +1200,9 @@ function PeerCompareChart({ ticker, className }) {
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-60 font-sans normal-case tracking-normal">
-                Indexed return from period start — {ticker.toUpperCase()} vs. three largest related
-                peers{data?.peers?.length ? ` (${data.peers.join(", ")})` : ""} and the S&P 500 (SPY).
+                Indexed return from period start — {ticker.toUpperCase()} vs. up to three largest
+                {data?.industry ? ` ${data.industry}` : " industry"} peers
+                {data?.peers?.length ? ` (${data.peers.join(", ")})` : ""} and the S&P 500 (SPY).
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
@@ -1310,20 +1614,21 @@ function SentimentPanel({ ticker, className }) {
       <SectionLabel className="mb-2">Street pulse — news & social TL;DR</SectionLabel>
 
       {hasTldrSections(data.tldrSections) ? (
-        <div className="flex flex-col gap-3">
+        <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
           {SENTIMENT_SECTIONS.filter((s) => data.tldrSections[s.key]?.trim()).map((s) => {
             const Icon = s.icon;
             return (
-              <div key={s.key}>
-                <div className="mb-1 flex items-center gap-1.5">
-                  <Icon className="size-3.5 text-muted-foreground" aria-hidden />
-                  <SectionLabel className="mb-0">{s.label}</SectionLabel>
-                </div>
-                <p className="m-0 text-sm leading-relaxed text-pretty">{data.tldrSections[s.key]}</p>
-              </div>
+              <li key={s.key} className="flex items-start gap-2 text-[13px] leading-snug">
+                <Icon className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden />
+                <p className="m-0 min-w-0 text-pretty">
+                  <span className="font-medium text-muted-foreground">{s.label}</span>
+                  <span className="text-muted-foreground"> · </span>
+                  {data.tldrSections[s.key]}
+                </p>
+              </li>
             );
           })}
-        </div>
+        </ul>
       ) : (
         <p className="m-0 text-[13px] text-muted-foreground">
           {data.tldrAvailable
@@ -1482,17 +1787,172 @@ function SentimentPanel({ ticker, className }) {
   );
 }
 
-function VerdictSummaryStrip({ results, composite, strategyCount }) {
-  const summary = summarizeGroupVerdicts(results);
-  if (!summary && !composite) return null;
+function ReportHeader({ report, d, composite }) {
+  const chg = d.day_change_pct;
   return (
-    <div className="border-b bg-muted/20 px-4 py-2.5">
-      <p className="m-0 font-mono text-xs tabular-nums text-muted-foreground">
-        {summary}
-        {composite ? ` · score ${composite.value}/100` : ""}
-        {` · ${strategyCount} selected ${strategyCount === 1 ? "strategy" : "strategies"}`}
-      </p>
-    </div>
+    <header className="flex flex-wrap items-start gap-x-4 gap-y-2 border-b px-4 pb-3 pt-4">
+      <div className="min-w-0 flex-1">
+        <h2 className="font-display m-0 text-lg font-bold">
+          {d.company_name || report.ticker}{" "}
+          <span className="font-mono text-[13px] font-normal text-muted-foreground">({report.ticker})</span>
+        </h2>
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span className="font-display text-2xl font-bold tabular-nums">
+            {isNum(d.price) ? fmtMoney(d.price, d.currency) : "—"}
+          </span>
+          {isNum(chg) && (
+            <span className={cn("font-mono text-sm font-medium tabular-nums", chg >= 0 ? "text-under" : "text-over")}>
+              {chg >= 0 ? "▲" : "▼"} {fmt(Math.abs(chg))}% today
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="ml-auto flex items-baseline gap-3 text-right">
+        <div className="flex flex-col items-end gap-0.5">
+          <div className="flex items-center justify-end gap-2.5">
+            {composite && <Tag kind={composite.band.kind} label={composite.band.label} />}
+            {composite ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      tabIndex={0}
+                      aria-label="How is the value score calculated?"
+                      className={cn(
+                        "font-display cursor-help text-2xl font-bold tabular-nums",
+                        KIND_META[composite.band.kind].text,
+                      )}
+                    >
+                      {composite.value}
+                      <span className="text-sm font-normal text-muted-foreground"> / 100</span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-64 font-sans normal-case tracking-normal">
+                    Weighted average of {composite.counted} selected valuation checks (0 = expensive,
+                    100 = cheap). Each check maps its metric to a 0–100 score; missing data is
+                    skipped. Higher weights count more toward the total.
+                    {composite.capped && (
+                      <span className="mt-1 block text-background/80">
+                        Capped at 50 — distress signals (weak Z-Score or F-Score).
+                      </span>
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              <div className="font-display text-2xl font-bold tabular-nums text-muted-foreground">
+                —
+                <span className="text-sm font-normal text-muted-foreground"> / 100</span>
+              </div>
+            )}
+          </div>
+          {composite?.capped && (
+            <div className="font-mono text-[11px] text-over">
+              capped at 50 — distress signals (weak Z-Score or F-Score)
+            </div>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function StrategyBreakdown({ results, strategyCount }) {
+  const [open, setOpen] = useState(false);
+  const summary = summarizeGroupVerdicts(results);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-t border-border">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+        >
+          <ChevronDownIcon
+            className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          />
+          <span className="text-sm font-medium">Strategy breakdown</span>
+          <Badge variant="secondary" className="font-mono tabular-nums">
+            {strategyCount}/{STRATEGIES.length}
+          </Badge>
+          {summary && (
+            <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">
+              {summary}
+            </span>
+          )}
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
+        {summary && (
+          <p className="m-0 border-t border-border px-4 py-2 font-mono text-xs tabular-nums text-muted-foreground sm:hidden">
+            {summary}
+          </p>
+        )}
+        <div className="border-t border-border">
+          {GROUPS.map((g) => {
+            const rows = results.filter((r) => r.strat.group === g);
+            if (rows.length === 0) return null;
+            return <StrategyGroup key={g} title={g} rows={rows} />;
+          })}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function MarketContextSection({ ticker }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-t border-border">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/30"
+        >
+          <ChevronDownIcon
+            className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+          />
+          <span className="text-sm font-medium">Market context</span>
+          <span className="text-xs text-muted-foreground">News, sentiment & outlook</span>
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
+        <SentimentPanel ticker={ticker} className="border-t border-border" />
+        <OutlookCard ticker={ticker} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function TickerTabs({ reports, selected, active, onChange }) {
+  return (
+    <ToggleGroup
+      type="single"
+      spacing={1}
+      className="rise mt-6 flex-wrap"
+      value={active}
+      onValueChange={(v) => v && onChange(v)}
+    >
+      {reports.map((r) => {
+        const composite = reportComposite(r, selected);
+        return (
+          <ToggleGroupItem
+            key={r.ticker}
+            value={r.ticker}
+            className="relative h-8 gap-1.5 rounded-full px-3 font-mono text-xs tabular-nums data-[state=on]:bg-secondary data-[state=on]:font-medium data-[state=on]:text-foreground"
+          >
+            {r.ticker}
+            {r.status === "loading" && <Spinner className="size-3" />}
+            {composite && (
+              <span className={cn("font-medium tabular-nums", KIND_META[composite.band.kind].text)}>
+                {composite.value}
+              </span>
+            )}
+          </ToggleGroupItem>
+        );
+      })}
+    </ToggleGroup>
   );
 }
 
@@ -1537,14 +1997,14 @@ function OpinionPanel({ report }) {
         {sections.map((s) => {
           const Icon = s.icon;
           return (
-            <div key={s.key}>
-              <div className="mb-1 flex flex-col gap-1">
-                <Icon className="size-3.5 text-muted-foreground" aria-hidden />
-                <SectionLabel className="mb-0">{s.label}</SectionLabel>
+            <div key={s.key} className="flex items-start gap-2">
+              <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <div className="min-w-0">
+                <SectionLabel className="mb-1">{s.label}</SectionLabel>
+                <p className="m-0 text-sm leading-relaxed text-pretty text-foreground/90">
+                  {emphasizeOpinionText(report.opinion[s.key], s.key)}
+                </p>
               </div>
-              <p className="m-0 text-sm leading-relaxed text-pretty">
-                {report.opinion[s.key]}
-              </p>
             </div>
           );
         })}
@@ -1683,10 +2143,10 @@ function StrategyGroup({ title, rows }) {
   );
 }
 
-function TickerReport({ report, selected, index }) {
+function TickerReport({ report, selected, index, className }) {
   if (report.status === "loading") {
     return (
-      <Card className="rise mt-6 gap-0 py-0" style={{ animationDelay: `${index * 100}ms` }}>
+      <Card className={cn("rise mt-6 gap-0 py-0", className)} style={{ animationDelay: `${index * 100}ms` }}>
         <div className="flex flex-col gap-3 p-6">
           <div className="flex items-center gap-3">
             <Spinner className="text-muted-foreground" />
@@ -1703,7 +2163,7 @@ function TickerReport({ report, selected, index }) {
   }
   if (report.status === "error") {
     return (
-      <Alert variant="destructive" className="rise mt-6 px-5 py-4" style={{ animationDelay: `${index * 100}ms` }}>
+      <Alert variant="destructive" className={cn("rise mt-6 px-5 py-4", className)} style={{ animationDelay: `${index * 100}ms` }}>
         <TriangleAlertIcon />
         <AlertTitle>{report.ticker} — couldn't fetch data</AlertTitle>
         <AlertDescription>
@@ -1721,104 +2181,217 @@ function TickerReport({ report, selected, index }) {
     || (report.opinionStatus === "done" && !OPINION_SECTIONS.some((s) => report.opinion?.[s.key]?.trim()));
 
   return (
-    <Card className="rise mt-6 gap-0 py-0" style={{ animationDelay: `${index * 100}ms` }}>
-      <header className="flex flex-wrap items-baseline gap-4 border-b px-4 pb-3 pt-4">
-        <h2 className="font-display m-0 text-lg font-bold">
-          {d.company_name || report.ticker}{" "}
-          <span className="font-mono text-[13px] font-normal text-muted-foreground">({report.ticker})</span>
-        </h2>
-        <div className="ml-auto flex items-baseline gap-3 text-right">
-          <div className="flex flex-col items-end gap-0.5">
-            <div className="flex items-center justify-end gap-2.5">
-              {composite && <Tag kind={composite.band.kind} label={composite.band.label} />}
-              {composite ? (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span
-                        tabIndex={0}
-                        aria-label="How is the value score calculated?"
-                        className={cn(
-                          "font-display cursor-help text-2xl font-bold tabular-nums",
-                          KIND_META[composite.band.kind].text,
-                        )}
-                      >
-                        {composite.value}
-                        <span className="text-sm font-normal text-muted-foreground"> / 100</span>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-64 font-sans normal-case tracking-normal">
-                      Weighted average of {composite.counted} selected valuation checks (0 = expensive,
-                      100 = cheap). Each check maps its metric to a 0–100 score; missing data is
-                      skipped. Higher weights count more toward the total.
-                      {composite.capped && (
-                        <span className="mt-1 block text-background/80">
-                          Capped at 50 — distress signals (weak Z-Score or F-Score).
-                        </span>
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <div className="font-display text-2xl font-bold tabular-nums text-muted-foreground">
-                  —
-                  <span className="text-sm font-normal text-muted-foreground"> / 100</span>
-                </div>
-              )}
-            </div>
-            {composite?.capped && (
-              <div className="font-mono text-[11px] text-over">
-                capped at 50 — distress signals (weak Z-Score or F-Score)
-              </div>
-            )}
-          </div>
-        </div>
-      </header>
-      <VerdictSummaryStrip results={results} composite={composite} strategyCount={active.length} />
+    <Card className={cn("rise mt-6 gap-0 py-0", className)} style={{ animationDelay: `${index * 100}ms` }}>
+      <ReportHeader report={report} d={d} composite={composite} />
       <AiUnavailableBanner visible={aiUnavailable} />
+      <PriceContext d={d} hidePrice />
       <OpinionPanel report={report} />
-      <div className="border-b">
-        {GROUPS.map((g) => {
-          const rows = results.filter((r) => r.strat.group === g);
-          if (rows.length === 0) return null;
-          return <StrategyGroup key={g} title={g} rows={rows} />;
-        })}
+      <div className="border-b lg:grid lg:grid-cols-2">
+        <PriceChart
+          ticker={report.ticker}
+          currency={d.currency}
+          className="lg:border-r lg:border-border"
+        />
+        <PeerCompareChart ticker={report.ticker} className="border-t border-border lg:border-t-0" />
       </div>
-      <PriceContext d={d} />
-      <PriceChart ticker={report.ticker} currency={d.currency} />
-      <PeerCompareChart ticker={report.ticker} />
-      <SentimentPanel ticker={report.ticker} />
-      <OutlookCard ticker={report.ticker} />
+      <MarketContextSection ticker={report.ticker} />
+      <StrategyBreakdown results={results} strategyCount={active.length} />
     </Card>
   );
 }
 
 /* ————— main app ————— */
+function RecentSearchChips({ recentSearches, running, onAnalyze, className, showLabel }) {
+  if (recentSearches.length === 0) return null;
+  return (
+    <div className={className}>
+      {showLabel && <SectionLabel className="mb-1.5">Recent</SectionLabel>}
+      <div className="flex flex-wrap gap-1.5">
+        {recentSearches.map((tickers) => (
+          <Button
+            key={tickers.join(",")}
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={running}
+            onClick={() => onAnalyze(tickers)}
+            className="h-7 rounded-full bg-card px-2.5 font-mono text-xs tabular-nums active:scale-[0.96]"
+          >
+            {tickers.join(", ")}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StarterPanel({ running, recentSearches, onAnalyze }) {
+  return (
+    <div className="rise mt-8" style={{ animationDelay: "300ms" }}>
+      <SectionLabel className="mb-1">Get started</SectionLabel>
+      <p className="m-0 text-sm text-pretty text-muted-foreground">
+        Pick a pack below — value, growth, dividends, banks, traps, or global ADRs.
+      </p>
+
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {STARTER_PRESETS.map((preset) => {
+          const Icon = preset.icon;
+          return (
+          <button
+            key={preset.id}
+            type="button"
+            disabled={running}
+            onClick={() => onAnalyze(preset.tickers)}
+            className={cn(
+              "group flex min-w-0 flex-col items-start gap-1 rounded-xl bg-card px-3.5 py-2.5 text-left",
+              "ring-1 ring-foreground/10 transition-[box-shadow,ring-color] hover:ring-foreground/20",
+              "active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50",
+            )}
+          >
+            <span className="flex size-7 items-center justify-center rounded-lg bg-muted/50 ring-1 ring-foreground/10 transition-colors group-hover:bg-muted/80">
+              <Icon className="size-3.5 text-muted-foreground" aria-hidden />
+            </span>
+            <span className="text-sm font-medium">{preset.label}</span>
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {preset.tickers.join(" · ")}
+            </span>
+            <span className="text-[11px] text-muted-foreground/80">{preset.hint}</span>
+          </button>
+          );
+        })}
+      </div>
+
+      {recentSearches.length === 0 && (
+        <div className="mt-4">
+          <SectionLabel className="mb-1.5">Popular</SectionLabel>
+          <div className="flex flex-wrap gap-1.5">
+            {QUICK_TICKERS.map((ticker) => (
+              <Button
+                key={ticker}
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={running}
+                onClick={() => onAnalyze([ticker])}
+                className="h-7 rounded-full bg-card px-2.5 font-mono text-xs tabular-nums active:scale-[0.96]"
+              >
+                {ticker}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StrategyPicker({ selected, onToggle, onSelectAll, onClear }) {
+  const allSelected = selected.size === STRATEGIES.length;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size={allSelected ? "icon-sm" : "sm"}
+          className={cn("relative ml-auto shrink-0 text-muted-foreground", !allSelected && "gap-1")}
+          aria-label={`Strategies — ${selected.size} of ${STRATEGIES.length} selected`}
+        >
+          {allSelected ? (
+            <>
+              <SlidersHorizontalIcon />
+              <Badge variant="secondary" className="absolute -top-1 -right-1 h-4 min-w-4 px-1 font-mono text-[10px] tabular-nums">
+                {STRATEGIES.length}
+              </Badge>
+            </>
+          ) : (
+            <>
+              <ChevronDownIcon data-icon="inline-start" />
+              Strategies
+              <Badge variant="secondary" className="font-mono tabular-nums">
+                {selected.size}/{STRATEGIES.length}
+              </Badge>
+            </>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-72">
+        <div className="flex items-baseline gap-3 px-1.5 py-1">
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="relative px-0 after:absolute after:-inset-x-1 after:-inset-y-2"
+            onClick={onSelectAll}
+          >
+            select all
+          </Button>
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="relative px-0 text-muted-foreground after:absolute after:-inset-x-1 after:-inset-y-2"
+            onClick={onClear}
+          >
+            clear
+          </Button>
+        </div>
+        <DropdownMenuSeparator />
+        {GROUPS.map((g, i) => (
+          <DropdownMenuGroup key={g}>
+            {i > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuLabel>{g}</DropdownMenuLabel>
+            {STRATEGIES.filter((s) => s.group === g).map((s) => (
+              <DropdownMenuCheckboxItem
+                key={s.id}
+                checked={selected.has(s.id)}
+                onCheckedChange={(checked) => onToggle(s.id, checked === true)}
+                onSelect={(e) => e.preventDefault()}
+              >
+                {s.name}
+              </DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuGroup>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export default function Tausta() {
   const [tickerInput, setTickerInput] = useState("");
-  const [selected, setSelected] = useState(new Set(STRATEGIES.map((s) => s.id)));
+  const [selected, setSelected] = useState(() => loadSelectedStrategies());
   const [reports, setReports] = useState([]);
   const [running, setRunning] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [recentSearches, setRecentSearches] = useState(() => loadRecentSearches());
+  const [activeTicker, setActiveTicker] = useState(null);
+  const demoStarted = useRef(false);
 
-  const setGroupSelection = (group, values) => {
+  useEffect(() => {
+    saveSelectedStrategies(selected);
+  }, [selected]);
+
+  useEffect(() => {
+    if (reports.length === 0) {
+      setActiveTicker(null);
+      return;
+    }
+    if (!activeTicker || !reports.some((r) => r.ticker === activeTicker)) {
+      setActiveTicker(reports[0].ticker);
+    }
+  }, [reports, activeTicker]);
+
+  const toggleStrategy = (id, checked) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      STRATEGIES.filter((s) => s.group === group).forEach((s) => next.delete(s.id));
-      values.forEach((id) => next.add(id));
+      if (checked) next.add(id);
+      else next.delete(id);
       return next;
     });
   };
 
-  const runAnalysis = async () => {
-    // Split on commas/semicolons when present so multi-word company names
-    // ("Berkshire Hathaway, Tesla") survive; otherwise split on whitespace.
-    const raw = tickerInput.trim();
-    const tokens = /[,;]/.test(raw) ? raw.split(/[,;]+/) : raw.split(/\s+/);
-    const tickers = [...new Set(
-      tokens.map((t) => t.trim().toUpperCase()).filter(Boolean)
-    )].slice(0, 3);
+  const analyzeTickers = useCallback(async (tickers) => {
     if (tickers.length === 0 || selected.size === 0 || running) return;
+    setTickerInput(tickers.join(", "));
     setRunning(true);
     setReports(tickers.map((t) => ({ ticker: t, status: "loading" })));
     const active = STRATEGIES.filter((s) => selected.has(s.id));
@@ -1838,27 +2411,60 @@ export default function Tausta() {
         setReports((prev) => prev.map((r) => (r.ticker === t ? { ticker: t, status: "error", error: e.message } : r)));
       }
     }
+    setRecentSearches(saveRecentSearch(tickers));
     setRunning(false);
-  };
+  }, [selected, running]);
+
+  useEffect(() => {
+    if (demoStarted.current) return;
+    demoStarted.current = true;
+    let runDemo = false;
+    try {
+      runDemo = !localStorage.getItem(STORAGE_DEMO_SEEN);
+      if (runDemo) localStorage.setItem(STORAGE_DEMO_SEEN, "1");
+    } catch {
+      runDemo = false;
+    }
+    if (runDemo) analyzeTickers(["BRK.B"]);
+  }, [analyzeTickers]);
+
+  const runAnalysis = () => analyzeTickers(parseTickerInput(tickerInput));
+
+  const goHome = useCallback(() => {
+    setTickerInput("");
+    setReports([]);
+    setActiveTicker(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const activeReport = reports.find((r) => r.ticker === activeTicker) ?? reports[0];
+  const reportCardClass = reports.length > 1 ? "mt-3" : undefined;
 
   return (
     <div className="min-h-screen">
-      <div className="mx-auto max-w-5xl px-5 pb-20 pt-10">
+      <div className="mx-auto max-w-5xl px-5 pb-20">
 
-        <header className="rise border-b pb-4">
-          <h1 className="font-display mb-1 mt-0.5 text-3xl font-bold leading-tight">
-            Tausta
-          </h1>
-          <p className="m-0 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Search tickers, pick valuation strategies, and get a tagged verdict per method from live market figures.
-          </p>
-        </header>
+        <div className="sticky top-0 z-40 -mx-5 border-b border-border bg-background/95 px-5 pt-10 pb-4 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80">
+          <header className="rise">
+            <h1 className="font-display mb-1 mt-0.5 text-3xl font-bold leading-tight">
+              <button
+                type="button"
+                onClick={goHome}
+                aria-label="Back to home"
+                className="cursor-pointer rounded-sm text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                Tausta
+              </button>
+            </h1>
+            <p className="m-0 max-w-xl text-sm leading-relaxed text-pretty text-muted-foreground">
+              Search tickers, pick strategies, get tagged verdicts from live figures.
+            </p>
+          </header>
 
-        {/* controls */}
-        <div className="mt-5">
-          <div className="rise" style={{ animationDelay: "100ms" }}>
-            <div className="flex items-center gap-2">
-              <InputGroup className="h-8 bg-card">
+          {/* controls */}
+          <div className="rise mt-5" style={{ animationDelay: "100ms" }}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <InputGroup className="h-8 min-w-0 flex-1 bg-card">
                 <InputGroupAddon>
                   <SearchIcon />
                 </InputGroupAddon>
@@ -1873,79 +2479,54 @@ export default function Tausta() {
                 />
               </InputGroup>
               <Button
-                className="h-8 px-4 active:scale-[0.96]"
+                className="h-8 shrink-0 px-4 active:scale-[0.96]"
                 onClick={runAnalysis}
                 disabled={running}
               >
                 {running && <Spinner data-icon="inline-start" />}
                 {running ? "Analyzing…" : "Analyze"}
               </Button>
+              <StrategyPicker
+                selected={selected}
+                onToggle={toggleStrategy}
+                onSelectAll={() => setSelected(new Set(STRATEGIES.map((s) => s.id)))}
+                onClear={() => setSelected(new Set())}
+              />
             </div>
-          </div>
-
-          {/* strategy filters */}
-          <div className="rise mt-2" style={{ animationDelay: "200ms" }}>
-            <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
-                  <ChevronDownIcon
-                    data-icon="inline-start"
-                    className={cn("transition-transform", filtersOpen && "rotate-180")}
-                  />
-                  Strategies
-                  <Badge variant="secondary" className="font-mono tabular-nums">
-                    {selected.size}/{STRATEGIES.length}
-                  </Badge>
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
-                <div className="pb-1 pt-2">
-                  <div className="flex items-baseline gap-3">
-                    <Button
-                      variant="link" size="xs" className="relative px-0 after:absolute after:-inset-x-1 after:-inset-y-2"
-                      onClick={() => setSelected(new Set(STRATEGIES.map((s) => s.id)))}
-                    >
-                      select all
-                    </Button>
-                    <Button
-                      variant="link" size="xs" className="relative px-0 text-muted-foreground after:absolute after:-inset-x-1 after:-inset-y-2"
-                      onClick={() => setSelected(new Set())}
-                    >
-                      clear
-                    </Button>
-                  </div>
-                  {GROUPS.map((g) => (
-                    <div key={g} className="mt-2.5">
-                      <SectionLabel className="mb-1 text-[11px]">{g}</SectionLabel>
-                      <ToggleGroup
-                        type="multiple"
-                        spacing={1}
-                        className="flex-wrap"
-                        value={STRATEGIES.filter((s) => s.group === g && selected.has(s.id)).map((s) => s.id)}
-                        onValueChange={(values) => setGroupSelection(g, values)}
-                      >
-                        {STRATEGIES.filter((s) => s.group === g).map((s) => (
-                          <ToggleGroupItem
-                            key={s.id}
-                            value={s.id}
-                            size="sm"
-                            variant="outline"
-                            className="h-6 rounded-full bg-card px-2.5 text-xs font-normal text-muted-foreground active:scale-[0.96] data-[state=on]:border-primary/40 data-[state=on]:bg-accent data-[state=on]:font-medium data-[state=on]:text-accent-foreground"
-                          >
-                            {s.name}
-                          </ToggleGroupItem>
-                        ))}
-                      </ToggleGroup>
-                    </div>
-                  ))}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
+            <RecentSearchChips
+              recentSearches={recentSearches}
+              running={running}
+              onAnalyze={analyzeTickers}
+              className="mt-2"
+            />
           </div>
         </div>
 
         {/* results */}
-        {reports.map((r, i) => <TickerReport key={r.ticker} report={r} selected={selected} index={i} />)}
+        {reports.length === 0 && !running && (
+          <StarterPanel
+            running={running}
+            recentSearches={recentSearches}
+            onAnalyze={analyzeTickers}
+          />
+        )}
+        {reports.length > 1 && (
+          <TickerTabs
+            reports={reports}
+            selected={selected}
+            active={activeTicker}
+            onChange={setActiveTicker}
+          />
+        )}
+        {activeReport && (
+          <TickerReport
+            key={activeReport.ticker}
+            report={activeReport}
+            selected={selected}
+            index={0}
+            className={reportCardClass}
+          />
+        )}
 
         <Separator className="mt-8" />
         <footer className="pt-4 text-[11px] leading-relaxed text-muted-foreground/80">

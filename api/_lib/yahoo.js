@@ -215,21 +215,138 @@ function normalizeChartToMap(points, range) {
   return map;
 }
 
-export async function fetchPeerCompare(ticker, range) {
-  const rec = await yahooFinance.recommendationsBySymbol(ticker).catch(() => null);
-  let peerSymbols = (rec?.recommendedSymbols || [])
-    .map((r) => r.symbol)
-    .filter((s) => s && s.toUpperCase() !== ticker.toUpperCase());
-
-  if (peerSymbols.length) {
-    const q = await yahooFinance.quote(peerSymbols).catch(() => []);
-    const list = Array.isArray(q) ? q : [q];
-    peerSymbols = list
-      .filter((item) => item?.symbol && num(item.marketCap) !== null)
-      .sort((a, b) => b.marketCap - a.marketCap)
-      .map((item) => item.symbol)
-      .slice(0, 3);
+function buildIndustrySearchQueries(industryName, industryKey) {
+  const queries = new Set();
+  if (industryName) queries.add(industryName);
+  if (industryKey) {
+    queries.add(industryKey.replace(/-/g, " "));
+    for (const part of industryKey.split("-")) {
+      if (part.length >= 5) queries.add(part);
+    }
   }
+  if (industryName) {
+    for (const part of industryName.split(/\s*-\s*|\s+/)) {
+      if (part.length >= 5) queries.add(part);
+    }
+  }
+  return [...queries];
+}
+
+async function resolveIndustryPeers(ticker, limit = 3) {
+  const upper = ticker.toUpperCase();
+  const targetProfile = await yahooFinance
+    .quoteSummary(ticker, { modules: ["assetProfile"] })
+    .catch(() => null);
+  const industryKey = targetProfile?.assetProfile?.industryKey;
+  const sectorKey = targetProfile?.assetProfile?.sectorKey;
+  const industryName = targetProfile?.assetProfile?.industry;
+  if (!industryKey) return { peers: [], industry: industryName || null };
+
+  const profileCache = new Map();
+  const getProfile = async (sym) => {
+    const s = sym.toUpperCase();
+    if (!profileCache.has(s)) {
+      const p = await yahooFinance
+        .quoteSummary(s, { modules: ["assetProfile"] })
+        .catch(() => null);
+      profileCache.set(s, p?.assetProfile ?? null);
+    }
+    return profileCache.get(s);
+  };
+
+  const seen = new Set([upper]);
+  const candidates = [];
+  const add = (symbol, marketCap = 0) => {
+    const sym = symbol?.toUpperCase();
+    if (!sym || seen.has(sym)) return;
+    seen.add(sym);
+    candidates.push({ symbol: sym, marketCap: num(marketCap) ?? 0 });
+  };
+
+  const searchQueries = buildIndustrySearchQueries(industryName, industryKey);
+  const [rec, ...searchResults] = await Promise.all([
+    yahooFinance.recommendationsBySymbol(ticker).catch(() => null),
+    ...searchQueries.map((query) =>
+      yahooFinance.search(query, { quotesCount: 50, newsCount: 0 }).catch(() => null)
+    ),
+  ]);
+
+  const hop1 = (rec?.recommendedSymbols || []).map((r) => r.symbol).filter(Boolean);
+  hop1.forEach((s) => add(s));
+  for (const searchRes of searchResults) {
+    for (const q of searchRes?.quotes || []) {
+      if (q.quoteType === "EQUITY") add(q.symbol);
+    }
+  }
+
+  const hop1Profiles = await Promise.all(hop1.map(getProfile));
+  const expandSeeds = new Set();
+  for (let i = 0; i < hop1.length; i++) {
+    const p = hop1Profiles[i];
+    if (!p) continue;
+    if (p.industryKey === industryKey || p.sectorKey === sectorKey) {
+      expandSeeds.add(hop1[i].toUpperCase());
+    }
+  }
+
+  const hop2Recs = await Promise.all(
+    [...expandSeeds].slice(0, 6).map((s) =>
+      yahooFinance.recommendationsBySymbol(s).catch(() => null)
+    )
+  );
+  for (const r of hop2Recs) {
+    for (const x of r?.recommendedSymbols || []) add(x.symbol);
+  }
+
+  async function matchPeers(list, maxSymbols = list.length) {
+    const matched = [];
+    for (let i = 0; i < Math.min(list.length, maxSymbols) && matched.length < limit; i += 15) {
+      const batch = list.slice(i, i + 15);
+      const [profiles, quotes] = await Promise.all([
+        Promise.all(batch.map(({ symbol }) => getProfile(symbol))),
+        yahooFinance.quote(batch.map((b) => b.symbol)).catch(() => []),
+      ]);
+      const quoteList = Array.isArray(quotes) ? quotes : [quotes];
+      const mcapMap = Object.fromEntries(
+        quoteList
+          .filter((q) => q?.symbol)
+          .map((q) => [q.symbol.toUpperCase(), q.marketCap])
+      );
+      for (let j = 0; j < batch.length; j++) {
+        if (profiles[j]?.industryKey !== industryKey) continue;
+        const sym = batch[j].symbol;
+        matched.push({
+          symbol: sym,
+          marketCap: num(mcapMap[sym]) ?? batch[j].marketCap ?? 0,
+        });
+      }
+    }
+    return matched.sort((a, b) => b.marketCap - a.marketCap);
+  }
+
+  let matched = await matchPeers(candidates);
+  if (matched.length < limit) {
+    const scr = await yahooFinance.screener("most_actives", { count: 250 });
+    const fallback = (scr.quotes || [])
+      .filter((q) => q.symbol?.toUpperCase() !== upper)
+      .map((q) => ({
+        symbol: q.symbol.toUpperCase(),
+        marketCap: num(q.marketCap) ?? 0,
+      }));
+    const extra = await matchPeers(fallback, 100);
+    const merged = new Map();
+    for (const m of [...matched, ...extra]) merged.set(m.symbol, m);
+    matched = [...merged.values()].sort((a, b) => b.marketCap - a.marketCap);
+  }
+
+  return {
+    industry: industryName || null,
+    peers: matched.slice(0, limit).map((m) => m.symbol),
+  };
+}
+
+export async function fetchPeerCompare(ticker, range) {
+  const { peers: peerSymbols, industry } = await resolveIndustryPeers(ticker, 3);
 
   const seriesMeta = [
     { id: ticker.toUpperCase(), role: "primary", label: ticker.toUpperCase() },
@@ -275,6 +392,7 @@ export async function fetchPeerCompare(ticker, range) {
 
   return {
     range,
+    industry,
     peers: peerSymbols,
     series: chartResults.map(({ id, role, label, error }) => ({ id, role, label, error })),
     points,
@@ -332,6 +450,31 @@ function emptyTldrSections() {
   return { sentiment_lean: "", dominant_narrative: "", bearish_counterpoint: "" };
 }
 
+function compactTldrLine(text, maxLen = 110) {
+  if (!text?.trim()) return "";
+  let s = text.trim()
+    .replace(/^The most notable bearish concern is\s+/i, "")
+    .replace(/^The dominant narrative (centers on|focuses on|is)\s+/i, "")
+    .replace(/^The overall sentiment (lean|is)\s+/i, "")
+    .replace(/^Sentiment leans?\s+/i, "")
+    .replace(/^with a majority of\s+/i, "");
+  if (s.length > 0) s = s.charAt(0).toUpperCase() + s.slice(1);
+
+  const first = s.match(/^[^.!?]+[.!?]/)?.[0]?.trim() || s;
+  if (first.length <= maxLen) return first;
+  const clipped = first.slice(0, maxLen - 1).replace(/\s+\S*$/, "");
+  return `${clipped}…`;
+}
+
+function compactTldrSections(sections) {
+  if (!sections) return sections;
+  return {
+    sentiment_lean: compactTldrLine(sections.sentiment_lean),
+    dominant_narrative: compactTldrLine(sections.dominant_narrative),
+    bearish_counterpoint: compactTldrLine(sections.bearish_counterpoint),
+  };
+}
+
 function parseTldrSections(text) {
   const empty = emptyTldrSections();
   const trimmed = text.trim();
@@ -343,16 +486,20 @@ function parseTldrSections(text) {
     if (typeof parsed.tldr === "string" && parsed.tldr.trim()) {
       const paragraphs = parsed.tldr.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
       if (paragraphs.length >= 3) {
-        return {
+        return compactTldrSections({
           sentiment_lean: paragraphs[0],
           dominant_narrative: paragraphs[1],
           bearish_counterpoint: paragraphs.slice(2).join(" "),
-        };
+        });
       }
       if (paragraphs.length === 2) {
-        return { sentiment_lean: paragraphs[0], dominant_narrative: paragraphs[1], bearish_counterpoint: "" };
+        return compactTldrSections({
+          sentiment_lean: paragraphs[0],
+          dominant_narrative: paragraphs[1],
+          bearish_counterpoint: "",
+        });
       }
-      return { ...empty, sentiment_lean: parsed.tldr.trim() };
+      return compactTldrSections({ ...empty, sentiment_lean: parsed.tldr.trim() });
     }
     const sections = {
       sentiment_lean: pick("sentiment_lean"),
@@ -360,7 +507,7 @@ function parseTldrSections(text) {
       bearish_counterpoint: pick("bearish_counterpoint"),
     };
     if (sections.sentiment_lean || sections.dominant_narrative || sections.bearish_counterpoint) {
-      return sections;
+      return compactTldrSections(sections);
     }
     return null;
   } catch {
@@ -369,16 +516,20 @@ function parseTldrSections(text) {
 
   const paragraphs = trimmed.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   if (paragraphs.length >= 3) {
-    return {
+    return compactTldrSections({
       sentiment_lean: paragraphs[0],
       dominant_narrative: paragraphs[1],
       bearish_counterpoint: paragraphs.slice(2).join(" "),
-    };
+    });
   }
   if (paragraphs.length === 2) {
-    return { sentiment_lean: paragraphs[0], dominant_narrative: paragraphs[1], bearish_counterpoint: "" };
+    return compactTldrSections({
+      sentiment_lean: paragraphs[0],
+      dominant_narrative: paragraphs[1],
+      bearish_counterpoint: "",
+    });
   }
-  return { ...empty, sentiment_lean: trimmed };
+  return compactTldrSections({ ...empty, sentiment_lean: trimmed });
 }
 
 export async function writeSentimentSummary(apiKey, ticker, { news, stocktwits }) {
@@ -404,12 +555,12 @@ ${posts}
 ${counts}
 
 Respond with ONLY a JSON object (no markdown fences, no prose outside the JSON) with four keys:
-- "sentiment_lean": 1-2 sentences on the overall sentiment lean right now (bullish, bearish, or mixed) across news and social posts.
-- "dominant_narrative": 1-2 sentences on the dominant narrative or catalyst people are talking about.
-- "bearish_counterpoint": 1 sentence on the most notable concern or bearish counterpoint.
+- "sentiment_lean": ONE short sentence (max ~18 words) on overall lean — bullish, bearish, or mixed.
+- "dominant_narrative": ONE short sentence (max ~18 words) on the main catalyst or story.
+- "bearish_counterpoint": ONE short sentence (max ~18 words) on the top concern.
 - "headline_sentiments": an array with exactly one entry per numbered headline above, in the same order, each being "bullish", "bearish", or "neutral" — how that headline reads for ${ticker} specifically.
 
-Plain text inside each string value only. No investment advice, do not use the phrase "you should".`;
+Style: telegraphic, no filler openers ("Sentiment leans…", "The dominant narrative…", "The most notable concern…"). Lead with the fact. Plain text only. No investment advice; do not use "you should".`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -420,7 +571,7 @@ Plain text inside each string value only. No investment advice, do not use the p
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 400,
+      max_tokens: 280,
       messages: [{ role: "user", content: prompt }],
     }),
   });
