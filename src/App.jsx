@@ -946,6 +946,27 @@ function Tag({ kind, label, filled = false }) {
   );
 }
 
+function VerdictMarker({ kind }) {
+  const m = KIND_META[kind];
+  if (kind === "under") {
+    return (
+      <span
+        className="size-0 shrink-0 border-x-[3px] border-x-transparent border-b-[6px] border-b-under"
+        aria-hidden
+      />
+    );
+  }
+  if (kind === "over" || kind === "caution") {
+    return (
+      <span
+        className="size-0 shrink-0 border-x-[3px] border-x-transparent border-t-[6px] border-t-over"
+        aria-hidden
+      />
+    );
+  }
+  return <span className={cn("size-1.5 shrink-0 rounded-full", m.dot)} aria-hidden />;
+}
+
 function SectionLabel({ children, className, major = false }) {
   return (
     <div className={cn(major ? "section-major" : "text-xs font-medium text-muted-foreground", className)}>
@@ -1660,9 +1681,9 @@ function stocktwitsMoodSummary(st, bullPct, tagged) {
 }
 
 const OUTLOOK_LEAN_META = {
-  bullish: { label: "Leans bullish", badgeClass: "bg-under-soft text-under", dot: "bg-under" },
-  bearish: { label: "Leans bearish", badgeClass: "bg-over-soft text-over", dot: "bg-over" },
-  mixed: { label: "Mixed signals", badgeClass: "bg-secondary text-muted-foreground", dot: "bg-muted-foreground" },
+  bullish: { label: "Leans bullish", tagClass: "text-under", dot: "bg-under" },
+  bearish: { label: "Leans bearish", tagClass: "text-over", dot: "bg-over" },
+  mixed: { label: "Mixed signals", tagClass: "text-muted-foreground", dot: "bg-muted-foreground" },
 };
 
 const SIGNAL_LEAN_DOT = {
@@ -1692,9 +1713,9 @@ function OutlookSection({ title, group, narrative }) {
       <div className="rounded-lg bg-muted/30 px-3 py-2.5 ring-1 ring-foreground/5">
         <div className="flex items-center justify-between gap-2">
           <SectionLabel className="mb-0">{title}</SectionLabel>
-          <Badge className="h-5 rounded-4xl border border-border bg-secondary px-2 font-mono text-[11px] font-medium text-muted-foreground">
+          <span className="tag font-mono tabular-nums text-muted-foreground">
             No data
-          </Badge>
+          </span>
         </div>
         <p className="m-0 mt-1.5 text-[11px] text-muted-foreground">Not enough signals to form an outlook.</p>
       </div>
@@ -1709,9 +1730,9 @@ function OutlookSection({ title, group, narrative }) {
     <div className="rounded-lg bg-muted/30 px-3 py-2.5 ring-1 ring-foreground/5">
       <div className="flex items-center justify-between gap-2">
         <SectionLabel className="mb-0">{title}</SectionLabel>
-        <Badge className={cn("h-5 rounded-4xl px-2 font-mono text-[11px] font-medium tabular-nums", meta.badgeClass)}>
+        <span className={cn("tag font-mono tabular-nums", meta.tagClass)}>
           {meta.label}
-        </Badge>
+        </span>
       </div>
 
       <div
@@ -1812,7 +1833,7 @@ function OutlookCard({ ticker }) {
         </TooltipProvider>
       </div>
 
-      <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+      <div className="mt-2.5 grid gap-3 sm:grid-cols-2">
         <OutlookSection
           title={data.ticker}
           group={data.outlook.ticker}
@@ -1933,7 +1954,7 @@ function SentimentPanel({ ticker, className }) {
                     : "text-muted-foreground"
                 )}
               >
-                {n.sentiment === "bullish" ? "▲" : n.sentiment === "bearish" ? "▼" : n.sentiment === "neutral" ? "●" : "○"}
+                {n.sentiment ? "●" : "○"}
               </span>
               <a
                 href={n.link}
@@ -1990,7 +2011,7 @@ function SentimentPanel({ ticker, className }) {
 
           {tagged > 0 ? (
             <div
-              className="mt-1.5 flex h-2.5 overflow-hidden rounded-full bg-border"
+              className="mt-1.5 flex h-1.5 overflow-hidden rounded-full bg-border"
               role="img"
               aria-label={`${st.bullish} bullish, ${st.bearish} bearish, ${untagged} untagged out of ${st.total} recent posts`}
             >
@@ -2453,7 +2474,6 @@ function OpinionPanel({ report }) {
 
 function StrategyRow({ strat, result }) {
   const [open, setOpen] = useState(false);
-  const m = KIND_META[result.kind];
   const isNa = result.kind === "na";
   const { primary, secondary } = splitDetail(result.detail);
 
@@ -2490,9 +2510,9 @@ function StrategyRow({ strat, result }) {
       )}
       <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
         <div className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
-          <p className="m-0 flex items-start gap-2">
-            <span className={cn("mt-1 size-2 shrink-0 rounded-full", m.dot)} aria-hidden />
-            <span>{strat.how}</span>
+          <p className="m-0 flex items-center gap-2">
+            <VerdictMarker kind={result.kind} />
+            <span className="min-w-0">{strat.how}</span>
           </p>
           <p className="m-0 mt-1.5"><strong className="font-semibold text-under">Pro:</strong> {strat.pros}</p>
           <p className="m-0 mt-1"><strong className="font-semibold text-over">Con:</strong> {strat.cons}</p>
@@ -2504,7 +2524,6 @@ function StrategyRow({ strat, result }) {
 
 function CompactStrategyRow({ strat, result }) {
   const [open, setOpen] = useState(false);
-  const m = KIND_META[result.kind];
   const isNa = result.kind === "na";
   const { primary } = splitDetail(result.detail);
   const detailText = isNa ? result.detail : primary;
@@ -2546,9 +2565,9 @@ function CompactStrategyRow({ strat, result }) {
       </div>
       <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[vl-collapse-open_200ms_cubic-bezier(0.2,0,0,1)] data-[state=closed]:animate-[vl-collapse-close_150ms_cubic-bezier(0.2,0,0,1)]">
         <div className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
-          <p className="m-0 flex items-start gap-2">
-            <span className={cn("mt-1 size-2 shrink-0 rounded-full", m.dot)} aria-hidden />
-            <span>{strat.how}</span>
+          <p className="m-0 flex items-center gap-2">
+            <VerdictMarker kind={result.kind} />
+            <span className="min-w-0">{strat.how}</span>
           </p>
           <p className="m-0 mt-1.5"><strong className="font-semibold text-under">Pro:</strong> {strat.pros}</p>
           <p className="m-0 mt-1"><strong className="font-semibold text-over">Con:</strong> {strat.cons}</p>
@@ -3219,7 +3238,7 @@ export default function Tausta() {
                 type="button"
                 onClick={goHome}
                 aria-label="Back to home"
-                className="cursor-pointer rounded-sm text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                className="inline-flex cursor-pointer items-center rounded-sm text-left transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 Tausta
               </button>

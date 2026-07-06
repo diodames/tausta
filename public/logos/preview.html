@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Tausta — Logo options</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5.2.8/index.css" />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #101216;
+        color: #f0f2f5;
+        font-family: "Geist Variable", system-ui, sans-serif;
+        font-size: 15px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 4rem;
+      }
+
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.75rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+
+      .lede {
+        margin: 0 0 2rem;
+        color: #8c96a3;
+        font-size: 0.9375rem;
+      }
+
+      .grid {
+        display: grid;
+        gap: 1.25rem;
+      }
+
+      @media (min-width: 640px) {
+        .grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      .card {
+        background: #191c21;
+        border: 1px solid #2a2f37;
+        border-radius: 0.625rem;
+        padding: 1.25rem;
+      }
+
+      .card-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.35rem;
+      }
+
+      .card-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      .badge {
+        flex-shrink: 0;
+        font-size: 0.6875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #6ea8ff;
+        background: #12305b;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+      }
+
+      .rationale {
+        margin: 0 0 1.25rem;
+        color: #8c96a3;
+        font-size: 0.8125rem;
+      }
+
+      .sizes {
+        display: flex;
+        align-items: flex-end;
+        gap: 1.25rem;
+        margin-bottom: 1.25rem;
+        padding-bottom: 1.25rem;
+        border-bottom: 1px solid #2a2f37;
+      }
+
+      .size-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .size-item img {
+        display: block;
+        image-rendering: auto;
+      }
+
+      .size-label {
+        font-size: 0.6875rem;
+        color: #8c96a3;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .lockup-label {
+        margin: 0 0 0.5rem;
+        font-size: 0.6875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #8c96a3;
+      }
+
+      .lockup {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+        margin-bottom: 1rem;
+      }
+
+      .lockup img {
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+      }
+
+      .wordmark {
+        font-size: 1.875rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        line-height: 1.1;
+      }
+
+      .tagline {
+        margin: 0.25rem 0 0;
+        font-size: 0.8125rem;
+        color: #8c96a3;
+      }
+
+      .file-link {
+        font-size: 0.8125rem;
+        color: #6ea8ff;
+        text-decoration: none;
+      }
+
+      .file-link:hover {
+        text-decoration: underline;
+      }
+
+      .notes {
+        margin-top: 2.5rem;
+        padding: 1.25rem;
+        background: #191c21;
+        border: 1px solid #2a2f37;
+        border-radius: 0.625rem;
+      }
+
+      .notes h2 {
+        margin: 0 0 0.75rem;
+        font-size: 0.9375rem;
+        font-weight: 600;
+      }
+
+      .notes p,
+      .notes ul {
+        margin: 0 0 0.75rem;
+        color: #8c96a3;
+        font-size: 0.8125rem;
+      }
+
+      .notes ul {
+        padding-left: 1.25rem;
+      }
+
+      .notes li:last-child {
+        margin-bottom: 0;
+      }
+
+      .swatches {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+      }
+
+      .swatch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.75rem;
+        color: #8c96a3;
+        font-family: "Geist Mono Variable", ui-monospace, monospace;
+      }
+
+      .swatch-dot {
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 0.2rem;
+        border: 1px solid #2a2f37;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Tausta — Logo options</h1>
+      <p class="lede">
+        Compare four mark variants. The live app favicon and header are unchanged until you pick a winner.
+      </p>
+
+      <div class="grid">
+        <article class="card">
+          <div class="card-header">
+            <h3 class="card-title">v1 — Classic</h3>
+          </div>
+          <p class="rationale">Current favicon — chunky T, single primary blue. Status quo baseline.</p>
+          <div class="sizes">
+            <div class="size-item">
+              <img src="v1-classic.svg" width="32" height="32" alt="v1 at 32px" />
+              <span class="size-label">32px</span>
+            </div>
+            <div class="size-item">
+              <img src="v1-classic.svg" width="24" height="24" alt="v1 at 24px" />
+              <span class="size-label">24px</span>
+            </div>
+            <div class="size-item">
+              <img src="v1-classic.svg" width="16" height="16" alt="v1 at 16px" />
+              <span class="size-label">16px</span>
+            </div>
+          </div>
+          <p class="lockup-label">Header lockup</p>
+          <div class="lockup">
+            <img src="v1-classic.svg" alt="" />
+            <div>
+              <div class="wordmark">Tausta</div>
+              <p class="tagline">Ticker background — valuation, range, peers, and street pulse from live data.</p>
+            </div>
+          </div>
+          <a class="file-link" href="v1-classic.svg">v1-classic.svg</a>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h3 class="card-title">v2 — Layered</h3>
+            <span class="badge">Recommended</span>
+          </div>
+          <p class="rationale">Three background bands behind the T — layered analysis and Finnish “tausta” (background).</p>
+          <div class="sizes">
+            <div class="size-item">
+              <img src="v2-layered.svg" width="32" height="32" alt="v2 at 32px" />
+              <span class="size-label">32px</span>
+            </div>
+            <div class="size-item">
+              <img src="v2-layered.svg" width="24" height="24" alt="v2 at 24px" />
+              <span class="size-label">24px</span>
+            </div>
+            <div class="size-item">
+              <img src="v2-layered.svg" width="16" height="16" alt="v2 at 16px" />
+              <span class="size-label">16px</span>
+            </div>
+          </div>
+          <p class="lockup-label">Header lockup</p>
+          <div class="lockup">
+            <img src="v2-layered.svg" alt="" />
+            <div>
+              <div class="wordmark">Tausta</div>
+              <p class="tagline">Ticker background — valuation, range, peers, and street pulse from live data.</p>
+            </div>
+          </div>
+          <a class="file-link" href="v2-layered.svg">v2-layered.svg</a>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h3 class="card-title">v3 — Range</h3>
+          </div>
+          <p class="rationale">52-week range pill with price dot — price context within the band.</p>
+          <div class="sizes">
+            <div class="size-item">
+              <img src="v3-range.svg" width="32" height="32" alt="v3 at 32px" />
+              <span class="size-label">32px</span>
+            </div>
+            <div class="size-item">
+              <img src="v3-range.svg" width="24" height="24" alt="v3 at 24px" />
+              <span class="size-label">24px</span>
+            </div>
+            <div class="size-item">
+              <img src="v3-range.svg" width="16" height="16" alt="v3 at 16px" />
+              <span class="size-label">16px</span>
+            </div>
+          </div>
+          <p class="lockup-label">Header lockup</p>
+          <div class="lockup">
+            <img src="v3-range.svg" alt="" />
+            <div>
+              <div class="wordmark">Tausta</div>
+              <p class="tagline">Ticker background — valuation, range, peers, and street pulse from live data.</p>
+            </div>
+          </div>
+          <a class="file-link" href="v3-range.svg">v3-range.svg</a>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h3 class="card-title">v4 — Verdict</h3>
+          </div>
+          <p class="rationale">Layered T with under / fair / over colors — maps to strategy verdict tags.</p>
+          <div class="sizes">
+            <div class="size-item">
+              <img src="v4-verdict.svg" width="32" height="32" alt="v4 at 32px" />
+              <span class="size-label">32px</span>
+            </div>
+            <div class="size-item">
+              <img src="v4-verdict.svg" width="24" height="24" alt="v4 at 24px" />
+              <span class="size-label">24px</span>
+            </div>
+            <div class="size-item">
+              <img src="v4-verdict.svg" width="16" height="16" alt="v4 at 16px" />
+              <span class="size-label">16px</span>
+            </div>
+          </div>
+          <p class="lockup-label">Header lockup</p>
+          <div class="lockup">
+            <img src="v4-verdict.svg" alt="" />
+            <div>
+              <div class="wordmark">Tausta</div>
+              <p class="tagline">Ticker background — valuation, range, peers, and street pulse from live data.</p>
+            </div>
+          </div>
+          <a class="file-link" href="v4-verdict.svg">v4-verdict.svg</a>
+        </article>
+      </div>
+
+      <section class="notes">
+        <h2>Notes</h2>
+        <p>
+          All marks use a 32×32 viewBox with <code>#101216</code> background and <code>rx="7"</code> corners.
+          Text stays outside the SVG so the wordmark can scale independently in the header.
+        </p>
+        <ul>
+          <li><strong>Favicon:</strong> v1 or v2 work best at 16px — v3 and v4 may lose detail in the tab.</li>
+          <li><strong>Header:</strong> any variant pairs with the Geist wordmark at ~28px mark size.</li>
+          <li><strong>Live app:</strong> <code>/favicon.svg</code> and the header text-only button are unchanged.</li>
+        </ul>
+        <div class="swatches">
+          <span class="swatch"><span class="swatch-dot" style="background:#101216"></span>#101216</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#0F69FF"></span>#0F69FF</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#6EA8FF"></span>#6EA8FF</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#12305B"></span>#12305B</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#00C073"></span>#00C073</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#E8A93C"></span>#E8A93C</span>
+          <span class="swatch"><span class="swatch-dot" style="background:#FF4D52"></span>#FF4D52</span>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

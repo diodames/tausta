@@ -197,8 +197,23 @@ function apiRoutes(apiKey) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const siteUrl = (
+    env.VITE_SITE_URL ||
+    (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : "http://localhost:5173")
+  ).replace(/\/$/, "");
+
   return {
-    plugins: [react(), tailwindcss(), apiRoutes(env.ANTHROPIC_API_KEY)],
+    plugins: [
+      {
+        name: "html-site-url",
+        transformIndexHtml(html) {
+          return html.replaceAll("%SITE_URL%", siteUrl);
+        },
+      },
+      react(),
+      tailwindcss(),
+      apiRoutes(env.ANTHROPIC_API_KEY),
+    ],
     resolve: {
       alias: {
         "@": path.resolve(import.meta.dirname, "./src"),
